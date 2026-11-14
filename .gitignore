@@ -1,0 +1,7 @@
+# Python virtual environment and caches
+.venv/
+__pycache__/
+.pytest_cache/
+
+# Pulled data (re-creatable by running the pullers)
+source/databases/*/
