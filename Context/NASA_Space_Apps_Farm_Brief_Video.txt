@@ -1,0 +1,89 @@
+# tactiq.io free youtube transcript
+# 2026 Challenge | Field Shift: Adapting Farms with NASA Data
+# https://www.youtube.com/watch/cF0U2WXsM7o
+
+00:00:03.440 In a universe filled [music] with
+00:00:04.920 worlds, there is one we understand
+00:00:07.360 better than any other.
+00:00:17.960 And yet, look closer.
+00:00:20.120 Even here, the conditions [music]
+00:00:21.680 beneath our feet are changing. Heat
+00:00:23.960 shifts, rainfall changes, water becomes
+00:00:27.520 less certain, soil loses [music]
+00:00:29.680 nutrients, and farmers must decide what
+00:00:31.800 comes next.
+00:00:44.360 But Earth is constantly sending us
+00:00:46.200 signals, and NASA's public Earth
+00:00:48.600 observation data gives us new ways to
+00:00:50.720 listen. Rainfall,
+00:00:52.400 >> [music]
+00:00:52.600 >> soil moisture, heat, vegetation, water.
+00:00:56.440 Different observations, different
+00:00:58.295 [music] scales, pieces of the same
+00:01:00.200 story.
+00:01:12.280 Your mission, turn these observations
+00:01:14.560 into a tool that helps explore what
+00:01:16.360 could come next. [music] Compare
+00:01:18.000 rotations, reveal trade-offs, understand
+00:01:21.120 risk, make uncertainty visible.
+00:01:23.960 Build an SI [music] model, an
+00:01:25.640 interactive map, a visualization, a
+00:01:28.280 decision support tool. Or build
+00:01:30.400 something none of us has imagined yet.
+00:01:43.680 We don't need to travel to another world
+00:01:45.456 [music] to find a challenge worthy of
+00:01:47.160 exploration. The mission is here.
+00:01:50.080 What will you create?
+00:01:58.880 >> Hi.
+00:01:59.800 My name is Sadie Burnett Boudro, and I'm
+00:02:01.840 the author of the 2026 Space Apps
+00:02:03.760 Challenge, Field Shift: Adapting Farms
+00:02:06.360 with NASA Data.
+00:02:07.726 >> [music]
+00:02:07.960 >> As an engineer and developer out of
+00:02:09.720 NASA's Johnson Space Center, I support
+00:02:12.160 Artemis mission management and
+00:02:13.520 integration, as well as Moon base with
+00:02:15.720 utilization payload integration.
+00:02:18.120 I support lower Earth orbit for research
+00:02:20.400 and mission integration, and the early
+00:02:22.320 developmental efforts [music] of uh
+00:02:24.360 space reactor Freedom, the first
+00:02:25.880 nuclear-powered mission to Mars.
+00:02:28.040 I am incredibly excited that you joined
+00:02:29.800 our challenge, and I cannot wait to see
+00:02:31.440 what you built. Go team.
+00:02:33.800 >> Hi, I'm Mani Deep Gogineni from the NASA
+00:02:35.959 Johnson Space Center. As a data
+00:02:37.720 solutions architect, I support the
+00:02:39.440 Artemis mission management and
+00:02:41.040 integration through data solutions
+00:02:42.680 architecture, custom web app
+00:02:44.440 development, and innovative tooling that
+00:02:46.560 enables Artemis and Moon base payload
+00:02:48.840 workflows and lower Earth orbit
+00:02:50.840 operations.
+00:02:52.120 >> Hi, I'm William Stefanov from NASA's
+00:02:54.360 Johnson Space Center, where I am the
+00:02:56.280 senior Earth system scientist, and I
+00:02:58.800 work with Earth imagery
+00:03:00.880 from the International Space Station for
+00:03:03.160 disaster response [music] work, and also
+00:03:05.440 to support remote sensing science.
+00:03:07.640 I am a subject matter expert for the
+00:03:09.200 Field Shift: Adapting Farms with NASA
+00:03:11.000 Data Challenge. [music]
+00:03:12.959 >> Hi, I'm Alex Stoken, and I'm a data
+00:03:14.880 scientist at NASA Johnson Space Center
+00:03:16.560 in the Earth Science and Remote Sensing
+00:03:18.000 Unit. I am a machine learning domain
+00:03:20.440 expert who has been focused for the past
+00:03:22.000 many years on processing and deriving
+00:03:24.080 information from astronaut photography
+00:03:25.840 of Earth,
+00:03:26.327 >> [music]
+00:03:26.480 >> including applying machine learning
+00:03:27.600 models to this data to extract useful
+00:03:29.680 information for other scientists [music]
+00:03:31.360 to use. I'm excited to be uh part of
+00:03:33.959 this challenge.
