@@ -5,6 +5,9 @@ Run from the repo root:
     .venv\\Scripts\\python.exe source\\demo.py --lat 42.065 --lon -93.73 --start 2015-01-01 --end 2024-12-31
     .venv\\Scripts\\python.exe source\\demo.py --priority build_soil
     .venv\\Scripts\\python.exe source\\demo.py --lat 51.45 --lon -2.58 --current wheat barley
+    .venv\\Scripts\\python.exe source\\demo.py --previous corn                 (what should follow corn?)
+    .venv\\Scripts\\python.exe source\\demo.py --must-grow rice soybean        (build a rotation around these)
+    .venv\\Scripts\\python.exe source\\demo.py --price corn=180 --cost corn=900   (your own price and cost, USD)
     .venv\\Scripts\\python.exe source\\demo.py --json result.json             (also save the full result)
 
 Everything goes through backend.recommend(); a graphical front end calls the same function.
@@ -21,6 +24,15 @@ from backend import PRIORITY_PRESETS, recommend
 from data_pullers import TEST_FIELD
 
 
+def _pair(text: str) -> tuple[str, float]:
+    """'corn=180' -> ('corn', 180.0)"""
+    name, sep, number = text.partition("=")
+    try:
+        return name.strip().replace("_", " "), float(number)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected CROP=NUMBER, got {text!r}") from None
+
+
 def main(argv=None) -> int:
     last_year = date.today().year - 1
     p = argparse.ArgumentParser(description="Field Shift: crop rotation options for a location")
@@ -35,6 +47,14 @@ def main(argv=None) -> int:
     p.add_argument("--previous", default=None,
                    help="crop grown last, e.g. --previous corn (default: latest CropScape year, "
                         "else the last crop of --current)")
+    p.add_argument("--must-grow", nargs="+", default=None, metavar="CROP",
+                   help="one or two crops every rotation must contain, e.g. --must-grow rice")
+    p.add_argument("--price", nargs="+", default=[], metavar="CROP=USD_PER_TONNE", type=_pair,
+                   help="your own crop prices, e.g. --price corn=180 soybean=420")
+    p.add_argument("--cost", nargs="+", default=[], metavar="CROP=USD_PER_HECTARE", type=_pair,
+                   help="your costs per hectare, e.g. --cost corn=900")
+    p.add_argument("--country", default=None,
+                   help="country for FAOSTAT prices and yields (default: found from lat/lon)")
     p.add_argument("--years", type=int, default=3, help="length of suggested rotations (1-4)")
     p.add_argument("--irrigated", action="store_true", help="field is irrigated (ignore rainfall)")
     p.add_argument("--smap", action="store_true",
@@ -45,6 +65,8 @@ def main(argv=None) -> int:
     try:
         rec = recommend(args.lat, args.lon, args.start, args.end, priorities=args.priority,
                         current_rotation=args.current, previous_crop=args.previous,
+                        must_grow=args.must_grow, local_prices=dict(args.price) or None,
+                        costs=dict(args.cost) or None, country=args.country,
                         rotation_years=args.years,
                         irrigated=args.irrigated, use_smap=args.smap,
                         on_progress=lambda msg: print(f"[..] {msg}", file=sys.stderr))

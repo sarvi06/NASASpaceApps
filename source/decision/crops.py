@@ -1,20 +1,21 @@
-"""Candidate crops: a curated list of field, cover and forage crops, with their EcoCrop needs.
+"""Candidate crops: every plant in EcoCrop that can sit in a field rotation, with its needs.
 
-EcoCrop has ~2,500 plants (trees, ornamentals, weeds...). Recommending from all of them gives
-answers like "European larch", so we only consider the CANDIDATES below. Their growing needs
-(temperature, rain, pH, soil, season length) come from EcoCrop; the farm-practice facts
-(family, role, rough market value, winter hardiness) are filled in here because EcoCrop
-doesn't hold them, or holds them unreliably.
+EcoCrop has ~2,500 plants, most of them trees, ornamentals and medicinal plants. There is no
+hand-picked shortlist: is_rotation_crop() removes those using EcoCrop's own columns (life form,
+category, life span) and everything else is a candidate. What each plant can be used for
+(harvest, cover crop, forage), its family and its winter hardiness also come from EcoCrop.
 
-    raw = get_crop_requirements()       # data_pullers/FAO_EcoCrop_pull.py
-    crops = build_crops(raw)            # {scientific name: Crop}
+    raw = get_crop_requirements()                  # data_pullers/FAO_EcoCrop_pull.py
+    crops = build_crops(raw, sold=SOLD_CROPS)      # {scientific name: Crop}
+
+`value` (0-1) and `economics` start empty; decision/economics.py fills them from FAOSTAT.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -23,61 +24,22 @@ from .field_profile import CDL_TO_ECOCROP
 
 LEGUME_FAMILY = "Fabaceae"
 
-# --------------------------------------------------------------------------------------
-# Curated candidates.  value = rough relative market/forage value (0-1, INDICATIVE ONLY:
-# no price data is used), hardy_to = typical lowest air temperature an overwintering crop
-# survives while dormant (with normal snow/soil insulation); None = not winter-hardy.
-# --------------------------------------------------------------------------------------
-#   scientific name              name              family           roles                       value deep  hardy_to
-_CANDIDATES = [
-    ("Zea mays ssp. mays",         "corn",           "Poaceae",       ("cash",),                   0.80, False, None),
-    ("Glycine max",                "soybean",        "Fabaceae",      ("cash",),                   0.80, False, None),
-    ("Triticum aestivum",          "wheat",          "Poaceae",       ("cash", "cover"),           0.60, False, -25),
-    ("Avena sativa",               "oats",           "Poaceae",       ("cash", "cover", "forage"), 0.35, False, None),
-    ("Secale cereale",             "cereal rye",     "Poaceae",       ("cover", "cash", "forage"), 0.30, False, -30),
-    ("Hordeum vulgare",            "barley",         "Poaceae",       ("cash", "cover", "forage"), 0.45, False, -15),
-    ("Medicago sativa",            "alfalfa",        "Fabaceae",      ("forage",),                 0.60, True,  -30),
-    ("Trifolium pratense",         "red clover",     "Fabaceae",      ("cover", "forage"),         0.30, True,  -25),
-    ("Trifolium repens",           "white clover",   "Fabaceae",      ("cover", "forage"),         0.20, False, -25),
-    ("Trifolium incarnatum",       "crimson clover", "Fabaceae",      ("cover",),                  0.10, False, -15),
-    ("Vicia villosa ssp. villosa", "hairy vetch",    "Fabaceae",      ("cover",),                  0.10, False, -25),
-    ("Pisum sativum",              "field pea",      "Fabaceae",      ("cash", "cover"),           0.45, False, -12),
-    ("Vicia faba",                 "faba bean",      "Fabaceae",      ("cash", "cover"),           0.45, False, -10),
-    ("Raphanus sativus",           "tillage radish", "Brassicaceae",  ("cover",),                  0.05, True,  None),
-    ("Lolium multiflorum",         "annual ryegrass","Poaceae",       ("cover", "forage"),         0.30, False, -15),
-    ("Sorghum bicolor",            "sorghum",        "Poaceae",       ("cash", "forage", "cover"), 0.55, True,  None),
-    ("Helianthus annuus",          "sunflower",      "Asteraceae",    ("cash",),                   0.60, True,  None),
-    ("Brassica napus",             "canola",         "Brassicaceae",  ("cash",),                   0.60, False, -15),
-    ("Fagopyrum esculentum",       "buckwheat",      "Polygonaceae",  ("cover", "cash"),           0.35, False, None),
-    ("Lens culinaris",             "lentil",         "Fabaceae",      ("cash",),                   0.55, False, None),
-    ("Cicer arietinum",            "chickpea",       "Fabaceae",      ("cash",),                   0.60, False, None),
-    ("Phaseolus vulgaris",         "dry bean",       "Fabaceae",      ("cash",),                   0.65, False, None),
-    ("Solanum tuberosum",          "potato",         "Solanaceae",    ("cash",),                   0.90, False, None),
-    ("Beta vulgaris",              "sugar beet",     "Amaranthaceae", ("cash",),                   0.80, True,  None),
-    ("Panicum miliaceum",          "proso millet",   "Poaceae",       ("cash",),                   0.35, False, None),
-    ("Linum usitatissimum",        "flax",           "Linaceae",      ("cash",),                   0.45, False, None),
-    ("Sinapis alba",               "white mustard",  "Brassicaceae",  ("cover",),                  0.15, False, None),
-    ("Oryza sativa",               "rice",           "Poaceae",       ("cash",),                   0.75, False, None),
-    ("Gossypium hirsutum",         "cotton",         "Malvaceae",     ("cash",),                   0.80, True,  None),
-    ("Arachis hypogaea",           "peanut",         "Fabaceae",      ("cash",),                   0.75, False, None),
-    ("Vigna unguiculata",          "cowpea",         "Fabaceae",      ("cover", "cash", "forage"), 0.40, False, None),
-    ("Cajanus cajan",              "pigeon pea",     "Fabaceae",      ("cash", "cover"),           0.45, True,  None),
-    ("Pennisetum glaucum",         "pearl millet",   "Poaceae",       ("cash", "forage"),          0.40, False, None),
-    ("Crotalaria juncea",          "sunn hemp",      "Fabaceae",      ("cover",),                  0.10, True,  None),
-    ("Vigna radiata",              "mung bean",      "Fabaceae",      ("cash",),                   0.50, False, None),
-    ("Sesamum indicum",            "sesame",         "Pedaliaceae",   ("cash",),                   0.55, False, None),
-]
-CANDIDATES = {row[0]: row for row in _CANDIDATES}
+# EcoCrop categories (column `cat`).
+NOT_FIELD_CROPS = {"forest/wood", "ornamentals/turf", "medicinals & aromatic", "weed"}
+CASH_CATEGORIES = {"cereals & pseudocereals", "pulses (grain legumes)", "roots/tubers",
+                   "vegetables", "fruits & nuts", "materials"}
+FORAGE_CATEGORY, COVER_CATEGORY = "forage/pasture", "cover crop"
+# Perennials only fit a 1-4 year rotation if they are cut, ended or dug up within it.
+PERENNIALS_ALLOWED = {FORAGE_CATEGORY, COVER_CATEGORY, "roots/tubers"}
 
-# Extra names people (or CropScape) use for the candidates.
+HARDY_BELOW_C = -4      # EcoCrop "killing temperature at rest" at or below this = overwinters
+DEFAULT_VALUE = 0.5     # report-card value before any economics are known
+
+# Extra names people use that EcoCrop does not list.
 _ALIASES = {"maize": "Zea mays ssp. mays", "soy": "Glycine max", "soybeans": "Glycine max",
-            "rye": "Secale cereale", "winter wheat": "Triticum aestivum",
-            "spring wheat": "Triticum aestivum", "peas": "Pisum sativum",
-            "dry beans": "Phaseolus vulgaris", "potatoes": "Solanum tuberosum",
-            "sugarbeets": "Beta vulgaris", "flaxseed": "Linum usitatissimum",
-            "peanuts": "Arachis hypogaea", "radish": "Raphanus sativus",
-            "clover": "Trifolium pratense", "vetch": "Vicia villosa ssp. villosa",
-            "ryegrass": "Lolium multiflorum", "millet": "Panicum miliaceum"}
+            "winter wheat": "Triticum aestivum", "spring wheat": "Triticum aestivum",
+            "hairy vetch": "Vicia villosa ssp. villosa", "cereal rye": "Secale cereale",
+            "rapeseed": "Brassica napus", "sugarbeets": "Beta vulgaris var. saccharifera"}
 
 
 @dataclass(frozen=True)
@@ -86,8 +48,6 @@ class Crop:
     name: str
     family: str
     roles: frozenset            # {"cash", "cover", "forage"}
-    value: float                # rough relative market/forage value, 0-1 (indicative)
-    deep_rooted: bool
     hardy_to: float | None      # survives dormancy down to this air temp; None = not hardy
     # EcoCrop needs (None = unknown)
     tmin: float
@@ -115,6 +75,9 @@ class Crop:
     sal_abs: str | None
     fer_opt: str | None
     fer_abs: str | None
+    other_names: frozenset = frozenset()    # every EcoCrop common name, lower case
+    value: float = DEFAULT_VALUE            # 0-1 earning power here (economics.with_economics)
+    economics: Any = None                   # economics.Economics, or None if no price is known
 
     @property
     def legume(self) -> bool:
@@ -180,38 +143,88 @@ def _first(v: Any) -> str | None:
 
 
 # --------------------------------------------------------------------------------------
+# Which EcoCrop plants are rotation crops, and what for
+# --------------------------------------------------------------------------------------
+def is_rotation_crop(row: Mapping, sold: bool = False) -> bool:
+    """Can this EcoCrop plant sit in a field rotation?
+
+    Removed: trees; plants that are only timber, ornamental, medicinal or weeds; perennials
+    that are not forage, cover or root crops (orchards, plantations); and perennial shrubs
+    that are not root crops. EcoCrop gives some plants no category at all (e.g. sweet potato,
+    sugarcane): those are kept only if `sold`, i.e. FAOSTAT lists them as a crop farmers sell.
+    """
+    forms, categories, spans = _labels(row.get("lifo")), _labels(row.get("cat")), _labels(row.get("lispa"))
+    if not categories:
+        return sold
+    if "tree" in forms or categories <= NOT_FIELD_CROPS:
+        return False
+    if spans != {"perennial"}:
+        return True
+    allowed = {"roots/tubers"} if "shrub" in forms else PERENNIALS_ALLOWED
+    return bool(categories & allowed)
+
+
+def crop_roles(row: Mapping, sold: bool = False) -> frozenset:
+    """What the plant can be grown for, from its EcoCrop categories."""
+    categories = _labels(row.get("cat"))
+    roles = set()
+    if sold or categories & CASH_CATEGORIES:
+        roles.add("cash")
+    if FORAGE_CATEGORY in categories:
+        roles.add("forage")
+    if COVER_CATEGORY in categories:
+        roles.add("cover")
+    return frozenset(roles)
+
+
+# --------------------------------------------------------------------------------------
 # Building the candidate list
 # --------------------------------------------------------------------------------------
-def build_crops(raw: pd.DataFrame, extra: Iterable[str] = ()) -> dict[str, Crop]:
-    """Raw EcoCrop table -> {scientific name: Crop} for the curated candidates
-    (plus any `extra` scientific names, e.g. a crop in the field's history)."""
-    rows = raw.set_index("scientificname")
+def build_crops(raw: pd.DataFrame, sold: Mapping[str, str] | None = None,
+                extra: Iterable[str] = ()) -> dict[str, Crop]:
+    """Raw EcoCrop table -> {scientific name: Crop} for every rotation crop.
+
+    sold    {scientific name: everyday name} of crops FAOSTAT has prices for
+            (economics.SOLD_CROPS); they are listed first and use that name
+    extra   scientific names to include whatever the filter says (e.g. the field's history)
+
+    One Crop per name: where EcoCrop has several rows called the same (e.g. two "cotton"
+    species), the sold one, else the most complete row, is kept.
+    """
+    sold, extra = dict(sold or {}), set(extra)
+    records = raw.assign(_filled=raw.notna().sum(axis=1)).to_dict("records")
+    records.sort(key=lambda r: (r["scientificname"] not in sold, r["scientificname"] not in extra,
+                                -r["_filled"]))
     crops: dict[str, Crop] = {}
-    for sci in list(CANDIDATES) + [s for s in extra if s not in CANDIDATES]:
-        if sci not in rows.index:
+    names: set[str] = set()
+    for r in records:
+        sci = r["scientificname"]
+        if sci in crops or not (sci in extra or is_rotation_crop(r, sci in sold)):
             continue
-        r = rows.loc[sci]
-        if isinstance(r, pd.DataFrame):     # duplicate name: keep the most complete row
-            r = r.loc[r.notna().sum(axis=1).idxmax()]
-        crop = _make_crop(sci, r)
-        if crop is not None:
+        crop = _make_crop(r, sold.get(sci), forced=sci in extra)
+        if crop is not None and crop.name.lower() not in names:
             crops[sci] = crop
+            names.add(crop.name.lower())
     return crops
 
 
-def _make_crop(sci: str, r: pd.Series) -> Crop | None:
+def _make_crop(r: Mapping, name: str | None = None, forced: bool = False) -> Crop | None:
+    sci = r["scientificname"]
     tmin, tmax, topmn, topmx = (_num(r.get(c)) for c in ("tmin", "tmax", "topmn", "topmx"))
     gmin, gmax = _num(r.get("gmin")), _num(r.get("gmax"))
     if None in (tmin, tmax, topmn, topmx, gmin) or not tmin <= topmn <= topmx <= tmax or gmin <= 0:
         return None
     if gmax is None or gmax < gmin:
         gmax = gmin
-    _, name, family, roles, value, deep, hardy = CANDIDATES.get(
-        sci, (sci, _first(r.get("comname")) or sci, _family(r.get("famname")),
-              ("cash",), 0.5, False, None))
+    roles = crop_roles(r, sold=name is not None) or (frozenset({"cash"}) if forced else frozenset())
+    if not roles:
+        return None
+    rest_kill = _num(r.get("ktmpr"))
+    common = _items(r.get("comname"))
     return Crop(
-        sci=sci, name=name, family=family, roles=frozenset(roles), value=value,
-        deep_rooted=deep, hardy_to=hardy,
+        sci=sci, name=name or (str(common[0]).strip() if common else sci),
+        family=_family(r.get("famname")), roles=roles,
+        hardy_to=rest_kill if rest_kill is not None and rest_kill <= HARDY_BELOW_C else None,
         tmin=tmin, tmax=tmax, topmn=topmn, topmx=topmx, ktmp=_num(r.get("ktmp")),
         rmin=_num(r.get("rmin")), rmax=_num(r.get("rmax")),
         ropmn=_num(r.get("ropmn")), ropmx=_num(r.get("ropmx")),
@@ -223,6 +236,7 @@ def _make_crop(sci: str, r: pd.Series) -> Crop | None:
         dep_opt=_first(r.get("dep")), dep_abs=_first(r.get("depr")),
         sal_opt=_first(r.get("sal")), sal_abs=_first(r.get("salr")),
         fer_opt=_first(r.get("fer")), fer_abs=_first(r.get("ferr")),
+        other_names=frozenset(str(n).strip().lower() for n in common),
     )
 
 
@@ -242,10 +256,13 @@ def _family(v: Any) -> str:
 
 
 def find_crop(name: str, crops: dict[str, Crop]) -> Crop | None:
-    """Look a crop up by scientific name, our name, a CropScape name or a common alias."""
-    key = name.strip().lower()
+    """Look a crop up by scientific name, our name, a CropScape name, an alias or any EcoCrop
+    common name (the first crop listing that name wins; sold crops are listed first)."""
+    key = str(name).strip().lower()
     for crop in crops.values():
         if key in (crop.sci.lower(), crop.name.lower()):
             return crop
     sci = {k.lower(): v for k, v in CDL_TO_ECOCROP.items()}.get(key) or _ALIASES.get(key)
-    return crops.get(sci) if sci else None
+    if sci in crops:
+        return crops[sci]
+    return next((crop for crop in crops.values() if key in crop.other_names), None)

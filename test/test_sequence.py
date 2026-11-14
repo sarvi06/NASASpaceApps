@@ -21,13 +21,6 @@ def test_follow_score_ranks_hand_overs(crops):
     assert S.follow_score(crops[CORN], crops[CORN])[0] == 0
 
 
-def test_deep_roots_help_a_shallow_rooted_crop(crops):
-    assert crops[SUNFLOWER].deep_rooted and not crops[WHEAT].deep_rooted
-    with_bonus, why = S.follow_score(crops[SUNFLOWER], crops[WHEAT])
-    assert with_bonus == S.DIFFERENT_FAMILY + S.DEEP_ROOT_BONUS and "deep roots" in why
-    assert S.follow_score(crops[CLOVER], crops[WHEAT])[0] == 1      # never above 1
-
-
 def test_can_follow_hard_rules(crops):
     corn, soy, wheat = slot(crops[CORN]), slot(crops[SOY]), slot(crops[WHEAT])
     rye, clover = slot(crops[RYE], "cover"), slot(crops[CLOVER], "cover")

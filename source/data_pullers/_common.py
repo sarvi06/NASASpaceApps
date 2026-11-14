@@ -26,7 +26,7 @@ class Field:
 
 # Test field: a corn/soybean field in Story County, Iowa, ~7 km north-west of Ames.
 # CropScape shows a clean corn <-> soybean alternation here, so it is a good baseline.
-TEST_FIELD = Field(name="story_county_ia", lat=42.065, lon=-93.73)
+TEST_FIELD = Field(name="masakis family farm :)", lat=32.617, lon=130.629)
 
 # Where downloads are saved. Contents are gitignored and re-created automatically.
 DATA_DIR = Path(__file__).resolve().parents[1] / "databases"

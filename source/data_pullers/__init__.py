@@ -11,10 +11,12 @@
 
 from ._common import DATA_DIR, TEST_FIELD
 from .FAO_EcoCrop_pull import get_crop_requirements
+from .FAOSTAT_pull import find_country, get_country, get_crop_economics
 from .NASA_POWER_pull import get_climate
 from .NASA_SMAP_pull import get_soil_moisture
 from .USDA_CropScape_pull import get_crop_history
 from .USDA_SSURGO_pull import get_soil
 
 __all__ = ["get_climate", "get_soil_moisture", "get_crop_history", "get_soil",
-           "get_crop_requirements", "TEST_FIELD", "DATA_DIR"]
+           "get_crop_requirements", "get_country", "get_crop_economics", "find_country",
+           "TEST_FIELD", "DATA_DIR"]

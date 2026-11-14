@@ -98,7 +98,7 @@ CDL_TO_ECOCROP = {
     "Dry Beans": "Phaseolus vulgaris",
     "Peas": "Pisum sativum",
     "Potatoes": "Solanum tuberosum",
-    "Sugarbeets": "Beta vulgaris",
+    "Sugarbeets": "Beta vulgaris var. saccharifera",
     "Cotton": "Gossypium hirsutum",
     "Rice": "Oryza sativa",
     "Peanuts": "Arachis hypogaea",

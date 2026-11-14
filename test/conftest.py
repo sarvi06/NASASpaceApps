@@ -13,6 +13,7 @@ import pytest
 from data_pullers import _common
 from data_pullers.FAO_EcoCrop_pull import get_crop_requirements
 from decision.crops import build_crops
+from decision.economics import SOLD_CROPS, income_table, with_economics
 from decision.suitability import Climate
 
 # Monthly values from 10 years of NASA POWER at the Iowa test field (2015-2024).
@@ -37,9 +38,28 @@ def iowa_site():
             "erodibility_k": 0.28, "hydrologic_group": "B/D", "water_capacity": 0.21}
 
 
+def fake_faostat() -> pd.DataFrame:
+    """A few rows shaped like get_crop_economics() output (US-like numbers).
+    Lentils have no local price; okra is not grown locally (world figures only)."""
+    rows = [("Maize (corn)", 11.0, 200, 10.0, 220), ("Soya beans", 3.4, 450, 2.8, 480),
+            ("Wheat", 3.3, 250, 3.0, 260), ("Oats", 2.4, 230, 2.2, 240), ("Rye", 2.2, 210, 2.5, 220),
+            ("Barley", 4.0, 220, 3.1, 240), ("Sunflower seed", 2.0, 500, 1.8, 520),
+            ("Beans, dry", 2.2, 800, 1.2, 1200), ("Potatoes", 50.0, 220, 20.0, 300),
+            ("Tomatoes", 100.0, 120, 40.0, 500), ("Rice", 8.5, 330, 4.5, 400),
+            ("Sugar beet", 70.0, 50, 55.0, 55), ("Lentils, dry", 1.4, None, 1.1, 900),
+            ("Okra", None, None, 8.0, 700)]
+    df = pd.DataFrame(rows, columns=["item", "yield_t_ha", "price_usd_t",
+                                     "world_yield_t_ha", "world_price_usd_t"])
+    df["area_ha"] = 1000.0
+    df["yield_years"] = df["price_years"] = "2020-2024"
+    return df
+
+
 @pytest.fixture(scope="session")
 def crops():
-    return build_crops(get_crop_requirements())
+    """Every rotation crop in EcoCrop, priced with the fake FAOSTAT table."""
+    plain = build_crops(get_crop_requirements(), SOLD_CROPS)
+    return with_economics(plain, income_table(fake_faostat(), plain, "Testland"))
 
 
 def fake_power_daily(first_year=2015, last_year=2024, rain_scale=1.0) -> pd.DataFrame:

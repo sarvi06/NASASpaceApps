@@ -28,6 +28,9 @@ GLOSSARY = {
                          "(NASA POWER model; NASA SMAP satellite if enabled).",
     "dormancy / winter-kill": "Overwintering crops (winter wheat, rye, vetch) stop growing in cold "
                               "months; if nights are colder than they tolerate, they can die.",
+    "income per hectare": "Average yield x price paid to farmers in the field's country (FAOSTAT), "
+                          "in US dollars. It is income before costs unless you entered a cost "
+                          "for that crop. Your own prices replace FAOSTAT's.",
     "bare months": "Months with nothing growing, when soil is most exposed to wind and water "
                    "erosion and nutrients can wash out.",
 }
@@ -76,6 +79,8 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
                         f"{MONTHS[a % 12]}-{MONTHS[(a + s.months - 1) % 12]}, year {a // 12 % rot.years + 1}): "
                         f"suitability {s.score:.2f}, limited by {s.limiter}.")
         evidence += [f"    {line}" for line in s.evidence]
+        if s.use == "harvest" and s.crop.economics:
+            evidence.append(f"    Money: {s.crop.economics.describe()}")
 
     # ---- benefits ----
     benefits = []
@@ -94,10 +99,12 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
     if rot.covers:
         benefits.append(f"Cover crops ({_names(rot.covers)}) protect the soil between harvests and "
                         f"add organic matter as they break down.")
-    deep = [s for s in rot.slots if s.crop.deep_rooted]
-    if deep:
-        benefits.append(f"{_names(deep)} {_verb(deep, 'roots', 'root')} deeply, which improves "
-                        f"water infiltration and breaks up compacted layers.")
+    priced = [s for s in rot.harvests if s.crop.economics]
+    if priced:
+        yearly = sum(s.crop.economics.income_usd_ha * s.score for s in priced) / rot.years
+        benefits.append(f"Estimated earnings of about ${yearly:,.0f} per hectare per year from "
+                        f"{_names(priced)} (average yields scaled by how well each crop suits "
+                        f"the field; see Money lines above).")
     families = len({s.crop.family for s in rot.slots})
     base_families = len({s.crop.family for s in baseline.slots}) if baseline else 0
     if families > base_families:
@@ -117,8 +124,19 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
     if unfamiliar:
         gaps.append(f"{_names(unfamiliar)} {_verb(unfamiliar, 'has', 'have')} not been grown on this "
                     f"field (CropScape): local buyers, prices, equipment and storage are unknown.")
-    gaps.append("Income values are rough relative figures: no market price data is used "
-                "(USDA AMS Market News is not connected yet).")
+    unpriced = [s for s in rot.harvests if not s.crop.economics]
+    if unpriced:
+        gaps.append(f"No price or yield for {_names(unpriced)} in this country (FAOSTAT), so "
+                    f"{_verb(unpriced, 'it counts', 'they count')} as low income; enter your own "
+                    f"price if you can sell {_verb(unpriced, 'it', 'them')}.")
+    if priced:
+        gaps.append("Prices and yields are national yearly averages (FAOSTAT), not local ones; "
+                    "enter your own prices to correct them.")
+    no_cost = [s for s in priced if s.crop.economics.cost_usd_ha is None]
+    if no_cost:
+        gaps.append(f"Costs (seed, fertiliser, labour, machinery) are not included for "
+                    f"{_names(no_cost)}: FAOSTAT holds none, so high-cost crops such as vegetables "
+                    f"look better than they are. Enter your costs to compare on profit.")
     gaps.append("EcoCrop ranges are for the species as a whole; local varieties can differ.")
     gaps.append("NASA POWER climate is a ~50 km grid average, not a measurement at the field.")
     if not used_smap:
@@ -224,6 +242,11 @@ def text_report(rec) -> str:
     bar = "=" * 90
     lines = [bar, "  FIELD SHIFT - crop rotation options", bar, ""]
     lines += _field_summary(rec.field) + [_previous_crop_line(rec.previous_crop)]
+    if rec.must_grow:
+        lines.append("Must grow (in every option): " + ", ".join(rec.must_grow))
+    lines.append(f"Prices and yields: FAOSTAT national averages for {rec.country['name']}, "
+                 f"{len(rec.economics)} crops priced" if rec.country and rec.economics
+                 else "Prices and yields: none available, so income did not affect the ranking")
     if rec.warnings:
         lines += ["", "Notes:"] + [f"  ! {w}" for w in rec.warnings]
     lines += ["", f"Priorities: {rec.priority_name}  (" + ", ".join(

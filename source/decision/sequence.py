@@ -15,7 +15,6 @@ from .suitability import Slot
 AFTER_LEGUME = 1.0        # non-legume after a legume: uses the nitrogen left behind
 DIFFERENT_FAMILY = 0.7    # any other change of family: pest and disease break
 SAME_FAMILY = 0.0         # same family again: pests and diseases carry over
-DEEP_ROOT_BONUS = 0.15    # shallow-rooted crop after a deep-rooted one: loosened soil
 
 
 def can_follow(last: Slot, last_harvest: Slot | None, nxt: Slot) -> bool:
@@ -39,10 +38,5 @@ def follow_score(prev: Crop, nxt: Crop) -> tuple[float, str]:
     if prev.family == nxt.family:
         return SAME_FAMILY, f"{pair}: same plant family, so its pests and diseases carry over"
     if prev.legume:
-        score, reason = AFTER_LEGUME, f"{pair}: it can use the nitrogen the legume left behind"
-    else:
-        score, reason = DIFFERENT_FAMILY, f"{pair}: a different plant family, which breaks pest and disease cycles"
-    if prev.deep_rooted and not nxt.deep_rooted:
-        score = min(1.0, score + DEEP_ROOT_BONUS)
-        reason += f"; {prev.name}'s deep roots also leave the soil looser"
-    return score, reason
+        return AFTER_LEGUME, f"{pair}: it can use the nitrogen the legume left behind"
+    return DIFFERENT_FAMILY, f"{pair}: a different plant family, which breaks pest and disease cycles"

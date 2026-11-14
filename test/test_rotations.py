@@ -3,9 +3,10 @@
 import pytest
 
 from decision import rotations as R
+from decision.sequence import follow_score
 from decision.suitability import Climate, build_slots
 
-CORN, SOY = "Zea mays ssp. mays", "Glycine max"
+CORN, SOY, OATS, BEAN = "Zea mays ssp. mays", "Glycine max", "Avena sativa", "Phaseolus vulgaris"
 
 
 @pytest.fixture(scope="module")
@@ -111,6 +112,45 @@ def test_start_after_enters_the_cycle_where_it_suits_the_last_crop(iowa_search, 
             families = {s.crop.family for s in rot.harvests}
             if families - {previous.family}:                        # another entry point exists
                 assert started.harvests[0].crop.family != previous.family
+
+
+def test_must_grow_crops_are_in_every_rotation(iowa_search, crops):
+    clim, site, weights, familiar, plain = iowa_search
+    must = {OATS, BEAN}
+    assert not any(must <= {s.crop.sci for s in r.harvests} for r in plain[:20])   # not there anyway
+    slots = build_slots(crops, clim, site, always=must)
+    found = R.search_rotations(slots, clim, weights, 3, familiar=familiar, must_grow=must)
+    assert found and all(must <= {s.crop.sci for s in r.harvests} for r in found)
+    assert all(0 <= r.overall <= 1 for r in found)                  # the search bonus is not a score
+    top = R.pick_top(found, 3, familiar, shared=must)
+    assert len(top) == 3
+    for i, a in enumerate(top):                                     # differ beyond the shared crops
+        assert all(R._overlap(a, b, must) < 1 for b in top[i + 1:])
+
+
+def test_must_grow_crops_of_one_family_need_a_break_between_them(iowa_search, crops):
+    clim, site, weights, *_ = iowa_search
+    must = {CORN, "Triticum aestivum"}
+    slots = build_slots(crops, clim, site, always=must)
+    assert R.search_rotations(slots, clim, weights, 2, must_grow=must) == []
+    four_years = R.search_rotations(slots, clim, weights, 4, must_grow=must)
+    assert four_years and all(must <= {s.crop.sci for s in r.harvests} for r in four_years)
+
+
+def test_previous_crop_sets_the_start_and_counts_in_the_ranking(iowa_search, crops):
+    clim, site, weights, familiar, plain = iowa_search
+    slots = build_slots(crops, clim, site)
+    after_corn = R.search_rotations(slots, clim, weights, 3, familiar=familiar, previous=crops[CORN])
+    assert {r.canonical() for r in after_corn} == {r.canonical() for r in plain}
+    before = {r.canonical(): r for r in plain}
+    changed = 0
+    for r in after_corn[:100]:
+        entry = follow_score(crops[CORN], r.harvests[0].crop)[0]
+        pairs = [follow_score(a.crop, b.crop)[0] for a, b in r.hand_overs()]
+        assert r.card["sequence"] == pytest.approx((sum(pairs) + entry) / (len(pairs) + 1))
+        assert "corn" in r.start_note
+        changed += r.card["sequence"] != pytest.approx(before[r.canonical()].card["sequence"])
+    assert changed
 
 
 def test_calendar_grid(iowa_search):

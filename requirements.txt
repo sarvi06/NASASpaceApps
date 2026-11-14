@@ -2,4 +2,5 @@ requests
 pandas
 pyproj
 pyarrow
+pycountry
 pytest

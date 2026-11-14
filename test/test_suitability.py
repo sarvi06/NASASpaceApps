@@ -43,16 +43,21 @@ def test_winter_wheat_overwinters(crops, iowa_climate, iowa_site):
     assert slot.months > 6 and "winter" in slot.factors
 
 
-def test_rye_cover_survives_winter_and_crimson_clover_is_flagged(crops, iowa_climate, iowa_site):
+def test_rye_cover_overwinters_with_a_flagged_risk(crops, iowa_climate, iowa_site):
+    # EcoCrop rates rye hardy to -18 degC; Iowa's coldest nights are about -24 degC.
     rye = score_cover(crops["Secale cereale"], 8, 8, iowa_climate, iowa_site)       # Sep-Apr
-    assert rye is not None and rye.score >= 0.6 and rye.factors.get("winter", 1) == 1
-    clover = score_cover(crops["Trifolium incarnatum"], 8, 8, iowa_climate, iowa_site)
-    assert clover is not None and clover.flags and "winter-kill" in clover.flags[0]
+    assert rye is not None and rye.score >= 0.6 and 0.6 <= rye.factors["winter"] < 1
+    assert rye.flags and "winter-kill" in rye.flags[0]
+    mild = Climate([t + 8 for t in iowa_climate.tmean], [t + 8 for t in iowa_climate.tmin_ext],
+                   iowa_climate.precip)
+    assert score_cover(crops["Secale cereale"], 8, 8, mild, iowa_site).factors.get("winter", 1) == 1
 
 
 def test_frost_tender_cover_is_killed_but_still_counts(crops, iowa_climate):
-    radish = score_cover(crops["Raphanus sativus"], 8, 8, iowa_climate)
-    assert radish is not None and any("residue" in e for e in radish.evidence)
+    buckwheat = crops["Fagopyrum esculentum"]
+    assert buckwheat.can_cover and buckwheat.hardy_to is None
+    cover = score_cover(buckwheat, 7, 6, iowa_climate)                              # Aug-Jan
+    assert cover is not None and any("residue" in e for e in cover.evidence)
 
 
 def test_irrigation_never_lowers_a_score(crops, iowa_climate):
@@ -75,6 +80,28 @@ def test_every_score_is_between_0_and_1(crops, iowa_climate, iowa_site):
     for slots in build_slots(crops, iowa_climate, iowa_site, min_score=0).values():
         for s in slots:
             assert 0 <= s.score <= 1 and s.limiter and s.evidence
+
+
+def test_first_cut_is_priced_crops_ranked_by_suitability_times_income(crops, iowa_climate, iowa_site):
+    alfalfa = "Medicago sativa"
+    assert crops[alfalfa].economics is None and crops[alfalfa].can_harvest
+    slots = build_slots(crops, iowa_climate, iowa_site)
+    harvest = [s for month in slots.values() for s in month if s.use == "harvest"]
+    assert harvest and all(s.crop.economics for s in harvest)          # unpriced crops cut
+    for month in slots.values():
+        ranks = [s.score * s.crop.value for s in month if s.use == "harvest"]
+        assert ranks == sorted(ranks, reverse=True)
+    assert any(s.use == "cover" and not s.crop.economics for m in slots.values() for s in m)
+
+    kept = build_slots(crops, iowa_climate, iowa_site, always={alfalfa})
+    assert any(s.crop.sci == alfalfa and s.use == "harvest" for m in kept.values() for s in m)
+
+
+def test_without_any_prices_every_harvest_crop_is_a_candidate(crops, iowa_climate, iowa_site):
+    from dataclasses import replace
+    unpriced = {sci: replace(c, economics=None, value=0.1) for sci, c in crops.items()}
+    slots = build_slots(unpriced, iowa_climate, iowa_site)
+    assert any(s.use == "harvest" for month in slots.values() for s in month)
 
 
 def test_tropical_climate_changes_the_winners(crops):
