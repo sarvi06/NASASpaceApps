@@ -18,7 +18,7 @@ py -3.11 -m venv .venv
 .venv\Scripts\python.exe source\demo.py --lat 51.45 --lon -2.58 --current wheat barley    # outside the US
 .venv\Scripts\python.exe source\demo.py --previous corn         # what should follow corn?
 .venv\Scripts\python.exe source\demo.py --must-grow rice soybean                # build a rotation around these
-.venv\Scripts\python.exe source\demo.py --price corn=180 --cost corn=900        # your own price and cost (USD)
+.venv\Scripts\python.exe source\demo.py --price corn=180 --yield corn=12.5 --cost corn=900   # your own figures (USD)
 .venv\Scripts\python.exe source\demo.py --json result.json      # also save everything as JSON
 ```
 
@@ -45,8 +45,9 @@ Both take the same optional settings:
 priorities="balanced",            # or a dict of weights
 current_rotation=None,            # e.g. ["corn", "soybean"]; default: from CropScape (US)
 rotation_years=3, irrigated=False, use_smap=False,
-local_prices={"corn": 180},       # the farmer's own prices, US dollars per tonne
-costs={"corn": 900},              # the farmer's costs, US dollars per hectare
+farm_numbers={"corn": {"price": 180, "yield": 12.5, "cost": 900}},
+                                  # the farmer's own figures, each optional: price in US dollars
+                                  # per tonne, yield in tonnes per hectare, cost in US dollars per hectare
 country=None,                     # for FAOSTAT prices, e.g. "Japan"; default: found from lat/lon
 on_progress=print,                # status messages for a loading screen
 ```
@@ -59,11 +60,26 @@ months", or "sugarcane cannot be grown to harvest at this location in any month"
 
 ### Where the money figures come from
 
-Income per hectare = average yield x price paid to farmers, both from FAOSTAT for the country the
-field is in (average of the latest 5 years with data), in US dollars. A price from the farmer
-replaces FAOSTAT's. FAOSTAT has no seed or other production costs, so income is before costs
-unless the farmer enters a cost for that crop. Without costs, high-cost crops such as vegetables
-look better than they are.
+All of it is in `source/decision/economics.py`, which builds one `Economy` object; no other
+decision module reads prices.
+
+- **Income per hectare** = average yield x price paid to farmers, both from FAOSTAT for the country
+  the field is in (average of the latest 5 years with data), in US dollars. The farmer's own price
+  or yield replaces FAOSTAT's; with both, a crop FAOSTAT does not cover (e.g. alfalfa hay) can be
+  priced. A missing local price is estimated from the world median at the country's price level.
+- **Typical hectare**: the area-weighted average income of everything the country grows (about
+  $2,400 in the US, $18,000 in Japan). Income is scored against it: 0.5 = typical, 1 = ten times
+  typical. A rotation is scored once, on its real dollars per hectare per year.
+- **Local market**: the crop's share of the country's harvested area. FAOSTAT has no costs, but
+  what farmers actually plant shows what pays after costs and what can be sold.
+- **Trusted income**: income above the typical hectare counts only as far as the crop is grown
+  (`typical x (income / typical) ^ market`). US tomatoes show 46 times the typical income on 0.1%
+  of the land, which points to costs or market limits FAOSTAT cannot show. The report prints both
+  the full estimate and the part that was counted. A crop the farmer gave a price or a cost for
+  is trusted in full.
+- **Costs**: FAOSTAT has none. If the farmer enters costs for some crops, the other crops are
+  assumed to cost the same share of their income (the median share entered), so profit is
+  compared with profit. With no costs entered, everything is income before costs.
 
 ## How it works
 
@@ -72,8 +88,8 @@ front end / demo.py  ->  backend.recommend_after_crop() / recommend_around_crops
    data_pullers/            fetch each dataset (saved to source/databases/ the first time)
    decision/field_profile   climate by month, soil in EcoCrop terms, trends, current rotation
    decision/crops           every rotation crop in EcoCrop and its needs (trees etc. filtered out)
-   decision/economics       income per hectare of each crop in the field's country (FAOSTAT)
-   decision/suitability     score every crop x planting month, 0-1; first cut by suitability x income
+   decision/economics       one Economy: what each crop earns and how widely it is grown (FAOSTAT)
+   decision/suitability     score every crop x planting month, 0-1; first cut ranked by the Economy
    decision/sequence        what can follow what
    decision/rotations       search rotations, rate on a report card, pick top 3, score current
    decision/report          why / evidence / benefits / gaps / risks, text report
@@ -92,8 +108,9 @@ front end / demo.py  ->  backend.recommend_after_crop() / recommend_around_crops
 | `source/data_pullers/_common.py` | Settings, input checks, the shared "save it the first time" helper |
 | `source/decision/field_profile.py` | Turns the raw data into one `FieldProfile` |
 | `source/decision/crops.py` | Builds the crop list from EcoCrop: filters out trees, ornamentals and medicinals; reads family, uses and winter hardiness |
-| `source/decision/economics.py` | Income per hectare from FAOSTAT (or the farmer's prices and costs), and the FAOSTAT-to-EcoCrop name table |
-| `source/decision/suitability.py` | Scores each crop for each planting month (harvest or cover crop); first cut of the crop list |
+| `source/decision/economics.py` | The `Economy`: income per hectare, typical hectare, local market, trusted income, cost sharing |
+| `source/decision/data/faostat_to_ecocrop.csv` | Name table between FAOSTAT crop items and EcoCrop plants |
+| `source/decision/suitability.py` | Scores each crop for each planting month (harvest or cover crop); first cut of the crop list by a rank it is given |
 | `source/decision/sequence.py` | What can follow what: banned sequences, and a 0-1 score for each crop hand-over |
 | `source/decision/rotations.py` | Rotation search, report card, farmer priorities, top-3 picking, where to start after the last crop, current rotation |
 | `source/decision/report.py` | Plain-English explanations, glossary, text report |
@@ -131,7 +148,8 @@ SMAP needs a free account from https://urs.earthdata.nasa.gov/. Set the `EARTHDA
 | diversity | Number of plant families, which breaks pest and disease cycles |
 | sequence | How well each harvest crop follows the crop before it (after a legume is best; same family is worst), including the crop the field grew last |
 | water | Crops' rainfall needs compared with the field's rainfall (allowing for a falling trend) |
-| income | Income per hectare in the field's country, on a log scale from the lowest to the highest earning crop; crops the field hasn't grown are discounted (unknown market) |
+| income | The rotation's trusted income per hectare per year against the country's typical hectare (0.5 = typical, 1 = ten times typical) |
+| market | How widely the rotation's harvest crops are grown in the field's country (share of harvested area, log scale) |
 
 The overall score is a weighted sum of these, with weights set by the farmer's priority. Rotation
 rules: no two harvest crops from the same family back to back; a cover crop is never followed by its
@@ -140,8 +158,10 @@ must-grow crop is in the rotation.
 
 Which crops are considered: every EcoCrop plant except trees, plants that are only timber,
 ornamental, medicinal or weeds, and perennials that cannot sit in a 1-4 year rotation. Harvest
-crops must also have a known income (FAOSTAT or the farmer's price), be a crop the field already
-grows, or be a must-grow crop. Cover crops are the plants EcoCrop labels "cover crop".
+crops must also have something known to sell them for (a FAOSTAT price, here or as a world
+estimate, or the farmer's own), be a crop the field already grows, or be a must-grow crop. A crop
+not grown in the country can be suggested, but starts with a market score of 0. Cover crops are
+the plants EcoCrop labels "cover crop".
 
 ## Tests
 
@@ -155,7 +175,10 @@ grows, or be a must-grow crop. Cover crops are the plants EcoCrop labels "cover 
 - EcoCrop ranges are for a whole species, not a local variety. Its winter-hardiness figures are
   cautious (e.g. rye to -18 degC), and its "cover crop" label includes plants few farmers would
   use, so check cover-crop suggestions locally.
-- Prices and yields are national yearly averages, not local ones, and there are no costs unless
-  the farmer enters them. Forage crops (hay) and cover crops have no FAOSTAT price.
+- Prices and yields are national yearly averages, not local ones, unless the farmer enters their
+  own. There are no costs unless the farmer enters them; "trusted income" is an inference from
+  what farmers plant, not a measured cost.
+- Forage crops (hay) and cover crops have no FAOSTAT price; hay needs the farmer's price and yield.
+- One FAOSTAT item can price several similar crops (wheat and durum wheat, cauliflower and broccoli).
 - All money is in US dollars.
 - NASA POWER is a ~50 km grid, and soil and crop history are US-only.

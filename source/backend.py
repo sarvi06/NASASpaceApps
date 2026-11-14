@@ -9,7 +9,7 @@
 
     from backend import recommend_after_crop
     rec = recommend_after_crop(42.065, -93.73, "2015-01-01", "2024-12-31", "corn",
-                               local_prices={"corn": 180}, costs={"corn": 900})
+                               farm_numbers={"corn": {"price": 180, "cost": 900}})
     print(rec.to_text())          # full plain-English report
     data = rec.to_dict()          # everything as JSON-safe dicts/lists, for a UI
 
@@ -21,9 +21,10 @@ What happens inside:
        FAO EcoCrop crop needs; FAOSTAT prices and yields for the field's country
   3. decision/field_profile.py  -> one FieldProfile (climate, soil, trends, current rotation)
   4. decision/crops.py          -> candidate crops (every rotation crop in EcoCrop)
-     decision/economics.py      -> income per hectare of each crop here
-  5. decision/suitability.py    -> score every crop x planting month; first cut by
-                                   suitability x income
+     decision/economics.py      -> one Economy: what each crop earns here and how widely it
+                                   is grown (the only module that reads prices)
+  5. decision/suitability.py    -> score every crop x planting month; first cut ranked by
+                                   the Economy
   6. decision/rotations.py      -> search rotations, rate them, pick the top 3, score the current one,
                                    start each in the year that best follows the crop grown last
                                    (decision/sequence.py holds the "what can follow what" rules)
@@ -44,7 +45,7 @@ from data_pullers._common import check_location, to_date
 from data_pullers.USDA_CropScape_pull import FIRST_YEAR, in_contiguous_us, latest_year
 from decision import report
 from decision.crops import Crop, build_crops, find_crop
-from decision.economics import SOLD_CROPS, income_table, with_economics
+from decision.economics import SOLD_CROPS, Economy, build_economy
 from decision.field_profile import CDL_TO_ECOCROP, FieldProfile, _json_safe, build_field_profile
 from decision.rotations import (CARD, PRIORITY_PRESETS, Rotation, baseline_rotation, pick_top,
                                 resolve_priorities, search_rotations)
@@ -68,7 +69,8 @@ class Recommendation:
     previous_crop: dict | None = None       # {"crop", "scientific_name", "source"}: grown last
     must_grow: list[str] = field(default_factory=list)   # crops every rotation had to contain
     country: dict | None = None             # {"name", "iso2", "m49"} used for prices and yields
-    economics: dict = field(default_factory=dict)        # {scientific name: (Crop, Economics)}
+    economy: Economy = field(default_factory=Economy)    # what each crop earns and how it sells
+    crops: dict = field(default_factory=dict)            # every candidate, {scientific name: Crop}
     warnings: list[str] = field(default_factory=list)
     data_sources: list[str] = field(default_factory=list)
     inputs: dict = field(default_factory=dict)
@@ -84,9 +86,9 @@ class Recommendation:
             "previous_crop": self.previous_crop,
             "must_grow": self.must_grow,
             "country": self.country,
-            "economics": [{"crop": crop.name, "scientific_name": sci, **e.to_dict()}
-                          for sci, (crop, e) in sorted(self.economics.items(),
-                                                       key=lambda kv: -kv[1][1].income_usd_ha)],
+            "economy": {"typical_income_usd_ha": self.economy.typical_income,
+                        "assumed_cost_share": self.economy.cost_share},
+            "economics": self.economy.table(self.crops),
             "current_rotation": self.baseline.to_dict() if self.baseline else None,
             "recommended_rotations": [r.to_dict() for r in self.rotations],
             "best_single_crops": [{"crop": s.crop.name, "scientific_name": s.crop.sci,
@@ -105,14 +107,14 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
               irrigated: bool = False, use_smap: bool = False,
               on_progress: Callable[[str], None] | None = None,
               previous_crop: str | None = None, must_grow: list[str] | None = None,
-              local_prices: dict | None = None, costs: dict | None = None,
+              farm_numbers: dict | None = None,
               country: str | None = None) -> Recommendation:
     """Top 3 crop rotations for a location, using data between start_date and end_date.
 
     lat, lon          decimal degrees
     start_date, end_date   "YYYY-MM-DD"; at least 12 months apart (5+ years recommended)
     priorities        "balanced", "save_water", "build_soil", "extra_income", or a dict of
-                      weights over fit/cover/nitrogen/diversity/sequence/water/income
+                      weights over fit/cover/nitrogen/diversity/sequence/water/income/market
     current_rotation  e.g. ["corn", "soybean"]; default = detected from USDA CropScape
     rotation_years    length of the suggested rotations, 1-4 years
     irrigated         True = ignore rainfall limits
@@ -122,10 +124,12 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
                       CropScape, else the last crop of current_rotation. Each suggested
                       rotation starts in the year that best follows it.
     must_grow         one or two crops every rotation must contain, e.g. ["rice"]
-    local_prices      the farmer's own prices, {crop name: US dollars per tonne}; they
-                      replace FAOSTAT's national price for those crops
-    costs             the farmer's costs, {crop name: US dollars per hectare}; turns that
-                      crop's income into profit (FAOSTAT has no cost data)
+    farm_numbers      the farmer's own figures per crop, each optional, e.g.
+                      {"corn": {"price": 180, "yield": 12.5, "cost": 900}}
+                      price = US dollars per tonne, yield = tonnes per hectare (both replace
+                      FAOSTAT's national average), cost = US dollars per hectare (FAOSTAT has
+                      none; once any cost is given, crops without one are assumed to cost the
+                      same share of their income, so profit is compared with profit)
     country           country used for FAOSTAT prices and yields, e.g. "Japan" or "JP";
                       default = looked up from lat/lon
     """
@@ -217,12 +221,12 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
         faostat = get_crop_economics(place["m49"])
         sources.append(f"FAOSTAT producer prices and crop yields for {place['name']} (fao.org/faostat)")
     except Exception as exc:
-        warnings.append(f"FAOSTAT prices and yields unavailable ({exc}); income only counts "
-                        f"prices you entered.")
-    economy = income_table(faostat, crops, place["name"] if place else "", local_prices, costs)
-    crops = with_economics(crops, economy)
-    if not economy:
-        warnings.append("No crop has a known price here, so income did not affect the ranking.")
+        warnings.append(f"FAOSTAT prices and yields unavailable ({exc}); only crops you gave "
+                        f"both a price and a yield for are priced.")
+    economy = build_economy(faostat, crops, place["name"] if place else "", farm_numbers)
+    if not economy.crops:
+        warnings.append("No crop has a known price here, so income and market did not affect "
+                        "the ranking.")
 
     # ---- 3. field profile ----
     say("Building the field profile...")
@@ -243,12 +247,13 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
     # ---- 4-6. score crops, search rotations ----
     say("Scoring crops for each planting month...")
     familiar = set(history_sci) | set((fp.current_rotation or {}).get("scientific", [])) or None
-    by_start = build_slots(crops, clim, fp.site, irrigated, always=set(must) | (familiar or set()))
+    by_start = build_slots(crops, clim, fp.site, irrigated, rank=economy.rank,
+                           always=set(must) | (familiar or set()))
     for sci in must:
         warnings += _check_must_grow(crops[sci], by_start, clim, fp.site, irrigated)
 
     say("Searching for rotations...")
-    found = search_rotations(by_start, clim, weights, rotation_years, fp.insights, familiar,
+    found = search_rotations(by_start, clim, weights, rotation_years, fp.insights, economy,
                              must_grow=must, previous=last_grown)
     if must and not found:
         names = " and ".join(crops[s].name for s in must)
@@ -272,25 +277,26 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
     if fp.current_rotation:
         current_crops = [crops[s] for s in fp.current_rotation["scientific"] if s in crops]
         baseline = baseline_rotation(current_crops, clim, weights, fp.site, irrigated,
-                                     fp.insights, familiar)
+                                     fp.insights, economy)
         if baseline:
             baseline.strategy = "your current rotation"
 
     # ---- 7. explanations ----
     for rot in top + ([baseline] if baseline else []):
         rot.explanation = report.explain(rot, fp, None if rot is baseline else baseline, weights,
-                                         priority_name, familiar, used_smap=smap is not None)
+                                         priority_name, familiar, used_smap=smap is not None,
+                                         economy=economy)
     say("Done.")
     return Recommendation(
         field=fp, rotations=top, baseline=baseline, best_crops=best_single_crops(by_start),
         weights=weights, priority_name=priority_name, previous_crop=previous,
         must_grow=[crops[s].name for s in must], country=place,
-        economics={sci: (crops[sci], e) for sci, e in economy.items()},
+        economy=economy, crops=crops,
         warnings=warnings, data_sources=sources,
         inputs={"lat": lat, "lon": lon, "start_date": str(start), "end_date": str(end),
                 "priorities": priorities, "current_rotation": current_rotation,
                 "previous_crop": previous_crop, "must_grow": must_grow,
-                "local_prices": local_prices, "costs": costs, "country": country,
+                "farm_numbers": farm_numbers, "country": country,
                 "rotation_years": rotation_years, "irrigated": irrigated, "use_smap": use_smap},
     )
 
@@ -301,7 +307,7 @@ def recommend_after_crop(lat: float, lon: float, start_date, end_date, last_crop
 
     Each rotation is started in the year that best follows that crop, and how well it follows
     counts in the ranking. `options` are the same as recommend()'s (priorities, rotation_years,
-    local_prices, costs, ...)."""
+    farm_numbers, ...)."""
     if not last_crop or not str(last_crop).strip():
         raise ValueError("last_crop is required: the crop this plot grew last, e.g. 'corn'.")
     return recommend(lat, lon, start_date, end_date, previous_crop=last_crop, **options)

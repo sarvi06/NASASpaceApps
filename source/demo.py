@@ -7,7 +7,7 @@ Run from the repo root:
     .venv\\Scripts\\python.exe source\\demo.py --lat 51.45 --lon -2.58 --current wheat barley
     .venv\\Scripts\\python.exe source\\demo.py --previous corn                 (what should follow corn?)
     .venv\\Scripts\\python.exe source\\demo.py --must-grow rice soybean        (build a rotation around these)
-    .venv\\Scripts\\python.exe source\\demo.py --price corn=180 --cost corn=900   (your own price and cost, USD)
+    .venv\\Scripts\\python.exe source\\demo.py --price corn=180 --yield corn=12.5 --cost corn=900   (your own figures, USD)
     .venv\\Scripts\\python.exe source\\demo.py --json result.json             (also save the full result)
 
 Everything goes through backend.recommend(); a graphical front end calls the same function.
@@ -51,6 +51,8 @@ def main(argv=None) -> int:
                    help="one or two crops every rotation must contain, e.g. --must-grow rice")
     p.add_argument("--price", nargs="+", default=[], metavar="CROP=USD_PER_TONNE", type=_pair,
                    help="your own crop prices, e.g. --price corn=180 soybean=420")
+    p.add_argument("--yield", dest="yields", nargs="+", default=[], metavar="CROP=TONNES_PER_HECTARE",
+                   type=_pair, help="your own yields, e.g. --yield corn=12.5")
     p.add_argument("--cost", nargs="+", default=[], metavar="CROP=USD_PER_HECTARE", type=_pair,
                    help="your costs per hectare, e.g. --cost corn=900")
     p.add_argument("--country", default=None,
@@ -61,12 +63,16 @@ def main(argv=None) -> int:
                    help="also use NASA SMAP soil moisture (needs EARTHDATA_USERNAME/PASSWORD)")
     p.add_argument("--json", default=None, help="save the full result as JSON to this file")
     args = p.parse_args(argv)
+    farm_numbers: dict = {}
+    for what, pairs in (("price", args.price), ("yield", args.yields), ("cost", args.cost)):
+        for crop, number in pairs:
+            farm_numbers.setdefault(crop, {})[what] = number
 
     try:
         rec = recommend(args.lat, args.lon, args.start, args.end, priorities=args.priority,
                         current_rotation=args.current, previous_crop=args.previous,
-                        must_grow=args.must_grow, local_prices=dict(args.price) or None,
-                        costs=dict(args.cost) or None, country=args.country,
+                        must_grow=args.must_grow, farm_numbers=farm_numbers or None,
+                        country=args.country,
                         rotation_years=args.years,
                         irrigated=args.irrigated, use_smap=args.smap,
                         on_progress=lambda msg: print(f"[..] {msg}", file=sys.stderr))

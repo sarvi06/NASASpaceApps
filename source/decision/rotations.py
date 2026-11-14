@@ -4,10 +4,12 @@
                        (beam search: keep the best few hundred partial plans at each step).
    Hard rules:  what may follow what (sequence.can_follow), at least one harvest crop per
                 year, and every "must grow" crop is in the rotation.
-2. score_card()        rates a rotation 0-1 on seven things:
-                       fit, soil cover, nitrogen, diversity, crop order, water, income.
+2. score_card()        rates a rotation 0-1 on eight things:
+                       fit, soil cover, nitrogen, diversity, crop order, water, income, market.
                        Crop order = how well each harvest crop follows the crop before it
-                       (sequence.follow_score).
+                       (sequence.follow_score). Income and market come from the Economy
+                       (economics.py): income is the rotation's real dollars per hectare per
+                       year, scored once; market is how widely its crops are grown here.
 3. overall score       = weighted sum, weights set by the farmer's priority
                        (balanced / save_water / build_soil / extra_income).
 4. pick_top()          best 3 rotations that are clearly different from each other.
@@ -23,6 +25,7 @@ from dataclasses import dataclass, field, replace
 from typing import Iterable
 
 from .crops import Crop
+from .economics import Economy
 from .sequence import can_follow, follow_score
 from .suitability import MONTHS, Climate, Slot, score_harvest
 
@@ -36,17 +39,17 @@ CARD = {
     "diversity": "crop diversity (pest & disease break)",
     "sequence": "crop order (each crop suits the one before it)",
     "water": "low water demand",
-    "income": "income per hectare (relative)",
+    "income": "income per hectare per year (vs the country's typical hectare)",
+    "market": "local market (how widely the crops are grown in this country)",
 }
 
 PRIORITY_PRESETS = {
-    "balanced":     dict(fit=.25, cover=.15, nitrogen=.15, diversity=.10, sequence=.10, water=.10, income=.15),
-    "save_water":   dict(fit=.25, cover=.10, nitrogen=.10, diversity=.05, sequence=.05, water=.35, income=.10),
-    "build_soil":   dict(fit=.20, cover=.30, nitrogen=.15, diversity=.10, sequence=.10, water=.05, income=.10),
-    "extra_income": dict(fit=.25, cover=.10, nitrogen=.10, diversity=.05, sequence=.05, water=.10, income=.35),
+    "balanced":     dict(fit=.20, cover=.15, nitrogen=.10, diversity=.10, sequence=.10, water=.10, income=.15, market=.10),
+    "save_water":   dict(fit=.25, cover=.10, nitrogen=.10, diversity=.05, sequence=.05, water=.30, income=.10, market=.05),
+    "build_soil":   dict(fit=.20, cover=.30, nitrogen=.15, diversity=.10, sequence=.10, water=.05, income=.05, market=.05),
+    "extra_income": dict(fit=.20, cover=.10, nitrogen=.05, diversity=.05, sequence=.05, water=.05, income=.35, market=.15),
 }
 
-UNFAMILIAR_VALUE = 0.75     # income value kept for crops the field hasn't grown (market/equipment unknown)
 MUST_GROW_BONUS = 1.0        # search bonus for placing a must-grow crop (larger than any plan's score)
 ERODIBLE_SLOPE_PCT = 4       # SSURGO slope at/above this ...
 ERODIBLE_K = 0.37            # ... or erodibility K at/above this -> soil cover matters more
@@ -82,13 +85,6 @@ def harvests_per_year(clim: Climate) -> int:
     return 2 if sum(t >= 10 for t in clim.tmean) >= 8 else 1
 
 
-def crop_value(crop: Crop, familiar: set | None) -> float:
-    """Indicative value; discounted if the field has no history with the crop."""
-    if not familiar or crop.sci in familiar:
-        return crop.value
-    return crop.value * UNFAMILIAR_VALUE
-
-
 def water_score(crop: Crop, available_rain: float) -> float:
     """1 = needs much less rain than falls, 0 = needs more than falls (EcoCrop optimum minimum)."""
     need = crop.ropmn if crop.ropmn is not None else crop.rmin
@@ -121,6 +117,8 @@ class Rotation:
     years: int
     card: dict = field(default_factory=dict)
     overall: float = 0.0
+    income_usd_ha: float = 0.0     # estimated US dollars per hectare per year (priced crops only)
+    trusted_income_usd_ha: float = 0.0   # the part of it the income score counts
     is_baseline: bool = False
     strategy: str = ""             # why it was picked, e.g. "best for your priority"
     start_note: str = ""           # why it starts with this crop, given the field's last crop
@@ -175,6 +173,8 @@ class Rotation:
             "strategy": self.strategy,
             "start_note": self.start_note,
             "overall": round(self.overall, 3),
+            "income_usd_ha_per_year": round(self.income_usd_ha),
+            "trusted_income_usd_ha_per_year": round(self.trusted_income_usd_ha),
             "card": {k: round(v, 3) for k, v in self.card.items()},
             "steps": [{
                 "year": a // 12 % self.years + 1,
@@ -182,8 +182,6 @@ class Rotation:
                 "plant": MONTHS[a % 12], "end": MONTHS[(a + s.months - 1) % 12],
                 "months": s.months, "suitability": s.score, "limited_by": s.limiter,
                 "legume": s.crop.legume, "family": s.crop.family,
-                "income_usd_ha": round(s.crop.economics.income_usd_ha)
-                if s.use == "harvest" and s.crop.economics else None,
                 "evidence": list(s.evidence), "risks": list(s.flags),
             } for a, s in self.placed],
             "bare_months": len(self.bare_months()),
@@ -191,10 +189,19 @@ class Rotation:
         }
 
 
-def score_card(rot: Rotation, clim: Climate, insights: dict | None = None,
-               familiar: set | None = None, previous: Crop | None = None) -> dict:
+def yearly_income(rot: Rotation, economy: Economy, trusted: bool = False) -> float:
+    """Estimated US dollars per hectare per year: each harvest crop's income at an average
+    yield, scaled by how well it suits the field, spread over the rotation's years.
+    trusted=True gives the figure the ranking counts (Economy.trusted_income)."""
+    income = economy.trusted_income if trusted else economy.income
+    return sum(income(s.crop) * s.score for s in rot.harvests) / rot.years
+
+
+def score_card(rot: Rotation, clim: Climate, economy: Economy | None = None,
+               insights: dict | None = None, previous: Crop | None = None) -> dict:
     """0-1 scores on each CARD item. With `previous` (the crop the field grew last), crop
     order also counts how well the rotation's first harvest crop follows it."""
+    economy = economy or Economy()
     insights = insights or {}
     slots, harvests = rot.slots, rot.harvests
     weights = [s.months * (1.0 if s.use == "harvest" else 0.5) for s in slots]
@@ -208,14 +215,18 @@ def score_card(rot: Rotation, clim: Climate, insights: dict | None = None,
     sequence = sum(order) / len(order) if order else 0.0
     rain = expected_rain(clim, insights)
     water = sum(water_score(s.crop, rain) for s in harvests) / len(harvests) if harvests else 0.0
-    income = min(1.0, sum(crop_value(s.crop, familiar) * s.score for s in harvests) / rot.years)
+    income = economy.score(yearly_income(rot, economy, trusted=True))
+    market = sum(economy.market(s.crop) for s in harvests) / len(harvests) if harvests else 0.0
     return {"fit": fit, "cover": cover, "nitrogen": nitrogen, "diversity": diversity,
-            "sequence": sequence, "water": water, "income": income}
+            "sequence": sequence, "water": water, "income": income, "market": market}
 
 
-def rate(rot: Rotation, clim: Climate, weights: dict, insights: dict | None = None,
-         familiar: set | None = None, previous: Crop | None = None) -> Rotation:
-    rot.card = score_card(rot, clim, insights, familiar, previous)
+def rate(rot: Rotation, clim: Climate, weights: dict, economy: Economy | None = None,
+         insights: dict | None = None, previous: Crop | None = None) -> Rotation:
+    economy = economy or Economy()
+    rot.card = score_card(rot, clim, economy, insights, previous)
+    rot.income_usd_ha = yearly_income(rot, economy)
+    rot.trusted_income_usd_ha = yearly_income(rot, economy, trusted=True)
     rot.overall = sum(weights[k] * rot.card[k] for k in CARD)
     return rot
 
@@ -239,7 +250,7 @@ def _last_harvest(placed) -> Slot | None:
 
 
 def _gain(placed: tuple, slot: Slot, horizon: int, years: int, weights: dict, rain: float,
-          max_harvests: int = 99, familiar: set | None = None,
+          economy: Economy, max_harvests: int = 99,
           must_grow: frozenset = frozenset()) -> float | None:
     """Approximate report-card increase from adding `slot` after the crops in `placed`
     (empty for the first crop of a plan), or None if it breaks a rule."""
@@ -255,7 +266,8 @@ def _gain(placed: tuple, slot: Slot, horizon: int, years: int, weights: dict, ra
     g += weights["cover"] * slot.months / horizon
     g += weights["nitrogen"] * _legume_n(slot) / (years * 0.5) * 0.7
     if slot.use == "harvest":
-        g += weights["income"] * crop_value(c, familiar) * slot.score / years
+        g += weights["income"] * economy.value(c) * slot.score / years
+        g += weights["market"] * economy.market(c) / years
         g += weights["water"] * water_score(c, rain) / years
         if last is not None:
             g += weights["sequence"] * follow_score(last.crop, c)[0] / years
@@ -301,12 +313,12 @@ def _prune(states: list[_State], beam: int, per_sequence: int = 3) -> list[_Stat
 
 
 def search_rotations(by_start: dict[int, list[Slot]], clim: Climate, weights: dict, years: int = 3,
-                     insights: dict | None = None, familiar: set | None = None,
+                     insights: dict | None = None, economy: Economy | None = None,
                      max_idle: int = 11, beam: int = 60, must_grow: Iterable[str] = (),
                      previous: Crop | None = None) -> list[Rotation]:
     """All distinct complete rotations found, rated and sorted best first.
 
-    familiar   scientific names the field already grows (known markets and equipment)
+    economy    what each crop earns and how well it sells here (default: no price data)
     must_grow  scientific names every rotation must contain as a harvest crop
     previous   the crop the field grew last: each rotation starts in the year that best
                follows it, and that hand-over counts in its crop-order score
@@ -315,11 +327,12 @@ def search_rotations(by_start: dict[int, list[Slot]], clim: Climate, weights: di
     rain = expected_rain(clim, insights)
     max_harvests = years * harvests_per_year(clim)
     must_grow = frozenset(must_grow)
+    economy = economy or Economy()
     levels: dict[int, list[_State]] = defaultdict(list)
     for s0 in range(12):
         for slot in by_start.get(s0, []):
             if slot.use == "harvest" and slot.months <= horizon:
-                g = _gain((), slot, horizon, years, weights, rain, max_harvests, familiar, must_grow)
+                g = _gain((), slot, horizon, years, weights, rain, economy, max_harvests, must_grow)
                 levels[s0 + slot.months].append(_State(((s0, slot),), s0 + slot.months, g, s0))
 
     finals: dict[tuple, Rotation] = {}
@@ -346,14 +359,14 @@ def search_rotations(by_start: dict[int, list[Slot]], clim: Climate, weights: di
                     end = start + slot.months
                     if end > st.s0 + horizon:
                         continue
-                    g = _gain(st.placed, slot, horizon, years, weights, rain, max_harvests,
-                              familiar, must_grow)
+                    g = _gain(st.placed, slot, horizon, years, weights, rain, economy,
+                              max_harvests, must_grow)
                     if g is None:
                         continue
                     levels[end].append(_State(st.placed + ((start, slot),), end, st.score + g, st.s0))
 
     found = [start_after(r, previous) if previous else r for r in finals.values()]
-    rated = [rate(r, clim, weights, insights, familiar, previous) for r in found]
+    rated = [rate(r, clim, weights, economy, insights, previous) for r in found]
     return sorted(rated, key=lambda r: -r.overall)
 
 
@@ -427,7 +440,7 @@ def start_after(rot: Rotation, previous: Crop) -> Rotation:
 # --------------------------------------------------------------------------------------
 def baseline_rotation(crops: list[Crop], clim: Climate, weights: dict, site: dict | None = None,
                       irrigated: bool = False, insights: dict | None = None,
-                      familiar: set | None = None) -> Rotation | None:
+                      economy: Economy | None = None) -> Rotation | None:
     """One crop per year, each planted in its best month; no cover crops (as CropScape shows)."""
     placed, prev_end = [], 0
     for year, crop in enumerate(crops):
@@ -441,7 +454,7 @@ def baseline_rotation(crops: list[Crop], clim: Climate, weights: dict, site: dic
     if not placed:
         return None
     rot = Rotation(tuple(placed), max(1, len(crops)), is_baseline=True)
-    return rate(rot, clim, weights, insights, familiar)
+    return rate(rot, clim, weights, economy, insights)
 
 
 def calendar_grid(rot: Rotation) -> str:

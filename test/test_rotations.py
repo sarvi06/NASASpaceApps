@@ -10,14 +10,15 @@ CORN, SOY, OATS, BEAN = "Zea mays ssp. mays", "Glycine max", "Avena sativa", "Ph
 
 
 @pytest.fixture(scope="module")
-def iowa_search(crops):
+def iowa_search(crops, economy):
     from conftest import IOWA_PRECIP, IOWA_TMEAN, IOWA_TMIN_EXT
     clim = Climate(IOWA_TMEAN, IOWA_TMIN_EXT, IOWA_PRECIP)
     site = {"ph": 6.2, "text": "medium", "dra": "well (dry spells)", "dep": "deep (>>150 cm)",
             "sal": "low (<4 dS/m)", "fer": "high", "slope_pct": 2, "erodibility_k": 0.28}
     weights = R.resolve_priorities("balanced", site)
     familiar = {CORN, SOY}
-    found = R.search_rotations(build_slots(crops, clim, site), clim, weights, 3, familiar=familiar)
+    slots = build_slots(crops, clim, site, rank=economy.rank, always=familiar)
+    found = R.search_rotations(slots, clim, weights, 3, economy=economy)
     return clim, site, weights, familiar, found
 
 
@@ -78,9 +79,33 @@ def test_top_three_are_distinct_and_include_legumes(iowa_search):
             assert R._overlap(a, b) < 1
 
 
-def test_baseline_corn_soy_is_scored_and_beaten(iowa_search, crops):
+def test_income_score_uses_the_rotations_real_dollars_per_year(iowa_search, economy):
+    *_, found = iowa_search
+    for r in found[:100]:
+        dollars = sum(economy.income(s.crop) * s.score for s in r.harvests) / r.years
+        trusted = sum(economy.trusted_income(s.crop) * s.score for s in r.harvests) / r.years
+        assert r.income_usd_ha == pytest.approx(dollars) and dollars > 0
+        assert r.trusted_income_usd_ha == pytest.approx(trusted) and trusted <= dollars + 1e-9
+        assert r.card["income"] == pytest.approx(economy.score(trusted))
+        markets = [economy.market(s.crop) for s in r.harvests]
+        assert r.card["market"] == pytest.approx(sum(markets) / len(markets))
+        assert r.to_dict()["income_usd_ha_per_year"] == round(dollars)
+
+
+def test_a_long_low_earner_no_longer_counts_like_a_short_high_earner(iowa_search, crops, economy):
+    clim, site, weights, *_ = iowa_search
+    corn_soy = R.baseline_rotation([crops[CORN], crops[SOY]], clim, weights, site, economy=economy)
+    corn_only = R.baseline_rotation([crops[CORN]], clim, weights, site, economy=economy)
+    assert corn_only.income_usd_ha > corn_soy.income_usd_ha            # corn earns more than soybean
+    assert corn_only.card["income"] > corn_soy.card["income"]
+    assert corn_soy.card["market"] == 1.0
+    no_prices = R.baseline_rotation([crops[CORN], crops[SOY]], clim, weights, site)
+    assert no_prices.card["income"] == no_prices.card["market"] == 0.5  # neutral without data
+
+
+def test_baseline_corn_soy_is_scored_and_beaten(iowa_search, crops, economy):
     clim, site, weights, familiar, found = iowa_search
-    base = R.baseline_rotation([crops[CORN], crops[SOY]], clim, weights, site, familiar=familiar)
+    base = R.baseline_rotation([crops[CORN], crops[SOY]], clim, weights, site, economy=economy)
     assert base.is_baseline and base.years == 2
     assert [s.crop.sci for s in base.harvests] == [CORN, SOY]
     assert base.card["fit"] >= 0.8 and base.card["cover"] < 0.5    # fits well, soil often bare
@@ -90,7 +115,7 @@ def test_baseline_corn_soy_is_scored_and_beaten(iowa_search, crops):
 
 def test_report_card_scores_crop_order(iowa_search, crops):
     clim, site, weights, familiar, found = iowa_search
-    assert set(found[0].card) == set(R.CARD) and "sequence" in R.CARD
+    assert set(found[0].card) == set(R.CARD) and {"sequence", "income", "market"} <= set(R.CARD)
 
     def card(names):
         return R.baseline_rotation([crops[n] for n in names], clim, weights, site).card
@@ -114,12 +139,12 @@ def test_start_after_enters_the_cycle_where_it_suits_the_last_crop(iowa_search, 
                 assert started.harvests[0].crop.family != previous.family
 
 
-def test_must_grow_crops_are_in_every_rotation(iowa_search, crops):
+def test_must_grow_crops_are_in_every_rotation(iowa_search, crops, economy):
     clim, site, weights, familiar, plain = iowa_search
     must = {OATS, BEAN}
     assert not any(must <= {s.crop.sci for s in r.harvests} for r in plain[:20])   # not there anyway
-    slots = build_slots(crops, clim, site, always=must)
-    found = R.search_rotations(slots, clim, weights, 3, familiar=familiar, must_grow=must)
+    slots = build_slots(crops, clim, site, rank=economy.rank, always=must)
+    found = R.search_rotations(slots, clim, weights, 3, economy=economy, must_grow=must)
     assert found and all(must <= {s.crop.sci for s in r.harvests} for r in found)
     assert all(0 <= r.overall <= 1 for r in found)                  # the search bonus is not a score
     top = R.pick_top(found, 3, familiar, shared=must)
@@ -137,10 +162,10 @@ def test_must_grow_crops_of_one_family_need_a_break_between_them(iowa_search, cr
     assert four_years and all(must <= {s.crop.sci for s in r.harvests} for r in four_years)
 
 
-def test_previous_crop_sets_the_start_and_counts_in_the_ranking(iowa_search, crops):
+def test_previous_crop_sets_the_start_and_counts_in_the_ranking(iowa_search, crops, economy):
     clim, site, weights, familiar, plain = iowa_search
-    slots = build_slots(crops, clim, site)
-    after_corn = R.search_rotations(slots, clim, weights, 3, familiar=familiar, previous=crops[CORN])
+    slots = build_slots(crops, clim, site, rank=economy.rank, always=familiar)
+    after_corn = R.search_rotations(slots, clim, weights, 3, economy=economy, previous=crops[CORN])
     assert {r.canonical() for r in after_corn} == {r.canonical() for r in plain}
     before = {r.canonical(): r for r in plain}
     changed = 0

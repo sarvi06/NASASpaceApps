@@ -9,6 +9,7 @@ import backend
 from conftest import corn_soy_history, fake_faostat, fake_power_daily, nicollet_soil
 
 ARGS = (42.065, -93.73, "2015-01-01", "2024-12-31")
+CORN, SOY, OATS = "Zea mays ssp. mays", "Glycine max", "Avena sativa"
 
 
 @pytest.fixture
@@ -118,27 +119,49 @@ def test_poorly_suited_must_grow_crop_is_kept_with_a_warning(offline):
 def test_income_comes_from_faostat_and_farmer_numbers_replace_it(offline):
     rec = backend.recommend(*ARGS)
     assert rec.country["name"] == "United States"
-    corn = rec.economics["Zea mays ssp. mays"][1]
+    corn = rec.economy.get(rec.crops[CORN])
     assert corn.income_usd_ha == pytest.approx(2200) and "FAOSTAT United States" in corn.price_source
-    listed = rec.to_dict()["economics"]
-    assert listed[0]["crop"] == "tomato" and listed[0]["income_is"] == "gross income"
+    data = rec.to_dict()
+    assert data["economics"][0]["crop"] == "tomato" and data["economics"][0]["income_is"] == "gross income"
+    assert data["economy"]["typical_income_usd_ha"] == pytest.approx(rec.economy.typical_income)
+    assert {"income", "market"} <= set(data["recommended_rotations"][0]["card"])
     assert any(src.startswith("FAOSTAT") for src in rec.data_sources)
     text = rec.to_text()
-    assert "Money: about $" in text and "costs not included" in text
+    assert "Money: about $" in text and "costs not included" in text and "typical hectare" in text
+    for rot in rec.rotations:                                          # report and ranking agree
+        assert f"${rot.income_usd_ha:,.0f} per hectare per year" in " ".join(rot.explanation["benefits"])
 
-    value = lambda r, sci: r.economics[sci][0].value                  # 0-1 used in the ranking
-    own = backend.recommend(*ARGS, local_prices={"oats": 9000})
-    oats = own.economics["Avena sativa"][1]
+    value = lambda r, sci: r.economy.value(r.crops[sci])               # 0-1 used in the ranking
+    own = backend.recommend(*ARGS, farm_numbers={"oats": {"price": 9000}})
+    oats = own.economy.get(own.crops[OATS])
     assert oats.price_source == "your price" and oats.income_usd_ha == pytest.approx(2.4 * 9000)
-    assert value(own, "Avena sativa") == 1 > value(rec, "Avena sativa")
+    assert value(own, OATS) == 1 > value(rec, OATS)
+    assert value(own, CORN) == value(rec, CORN)                        # one price moves one crop
     crops_before = {s.crop.name for r in rec.rotations for s in r.harvests}
     crops_after = {s.crop.name for r in own.rotations for s in r.harvests}
     assert "oats" not in crops_before and "oats" in crops_after
 
-    costly = backend.recommend(*ARGS, costs={"tomato": 11990})
-    tomato = costly.economics["Lycopersicon esculentum"][1]
-    assert tomato.income_usd_ha == pytest.approx(10) and tomato.kind == "profit"
-    assert value(rec, "Lycopersicon esculentum") == 1 > value(costly, "Lycopersicon esculentum")
+
+def test_entered_costs_compare_every_crop_on_profit(offline):
+    plain = backend.recommend(*ARGS)
+    costed = backend.recommend(*ARGS, farm_numbers={"corn": {"cost": 1100}})     # half of corn's income
+    assert costed.economy.cost_share == pytest.approx(0.5)
+    corn, soy = costed.economy.get(costed.crops[CORN]), costed.economy.get(costed.crops[SOY])
+    assert corn.kind == soy.kind == "profit" and soy.cost_source.startswith("estimated")
+    assert costed.economy.value(costed.crops[CORN]) == pytest.approx(plain.economy.value(plain.crops[CORN]))
+    text = costed.to_text()
+    assert "other crops assumed at 50% of income" in text and "entered by you" in text
+    assert costed.to_dict()["economy"]["assumed_cost_share"] == pytest.approx(0.5)
+
+
+def test_farmer_price_and_yield_make_an_unlisted_crop_usable(offline):
+    rec = backend.recommend_around_crops(*ARGS, ["alfalfa"],
+                                         farm_numbers={"alfalfa": {"price": 220, "yield": 9}})
+    alfalfa = rec.economy.get(rec.crops["Medicago sativa"])
+    assert alfalfa.income_usd_ha == pytest.approx(1980) and alfalfa.yield_source == "your yield"
+    assert all("alfalfa" in {s.crop.name for s in r.harvests} for r in rec.rotations)
+    with pytest.raises(ValueError, match="give both a price and a yield"):
+        backend.recommend(*ARGS, farm_numbers={"alfalfa": {"price": 220}})
 
 
 def test_faostat_failure_is_a_warning_not_a_crash(offline, monkeypatch):
@@ -147,7 +170,8 @@ def test_faostat_failure_is_a_warning_not_a_crash(offline, monkeypatch):
     monkeypatch.setattr(backend, "get_crop_economics", down)
     rec = backend.recommend(*ARGS)
     assert any("FAOSTAT prices and yields unavailable" in w for w in rec.warnings)
-    assert rec.economics == {} and len(rec.rotations) == 3
+    assert rec.economy.crops == {} and len(rec.rotations) == 3
+    assert all(r.card["income"] == r.card["market"] == 0.5 for r in rec.rotations)
     assert "none available" in rec.to_text()
 
 
@@ -178,8 +202,8 @@ def test_short_period_warns(offline):
     (dict(current_rotation=["bananas"]), "Unknown crop"),
     (dict(previous_crop="bananas"), "Unknown crop"),
     (dict(must_grow=["corn", "oats", "wheat"]), "one or two"),
-    (dict(local_prices={"bananas": 3}), "Unknown crop"),
-    (dict(costs={"corn": -5}), "0 or more"),
+    (dict(farm_numbers={"bananas": {"price": 3}}), "Unknown crop"),
+    (dict(farm_numbers={"corn": {"cost": -5}}), "0 or more"),
     (dict(country="Atlantis"), "Unknown country"),
 ])
 def test_bad_inputs_give_clear_errors(offline, kwargs, message):

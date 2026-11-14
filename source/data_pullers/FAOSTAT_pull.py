@@ -11,6 +11,7 @@ Output:  DataFrame, one row per FAOSTAT crop item:
            yield_t_ha            average yield in that country, tonnes per hectare
            area_ha               average area harvested in that country
            price_usd_t           average price paid to farmers there, US dollars per tonne
+           price_low_usd_t, price_high_usd_t   lowest and highest yearly price in those years
            yield_years, price_years   the years averaged, e.g. "2020-2024"
            world_yield_t_ha, world_price_usd_t   median of all countries (for gaps)
          Averages use the latest 5 years that have data. Empty cells = FAOSTAT has no figure.
@@ -19,7 +20,8 @@ Saved:   databases/faostat/crop_yields_and_prices.parquet (all countries, last 1
 Source: FAOSTAT bulk downloads, https://www.fao.org/faostat/en/#data (QCL and PP domains).
 No login needed. The first call downloads about 45 MB, once.
 Limits: figures are national averages per year, not local ones, and FAOSTAT holds no seed or
-production costs.
+production costs. FAOSTAT's own totals ("Cereals, primary", "Vegetables Primary", ...) are left
+out, so the rows can be added up without counting land twice.
 """
 
 import io
@@ -43,9 +45,10 @@ USER_AGENT = "FieldShift-crop-rotation-tool"      # Nominatim asks every client 
 YEARS_KEPT = 10        # years saved to disk
 YEARS_AVERAGED = 5     # latest years with data that make up an average
 FIRST_REGION_CODE = 5000                          # FAOSTAT area codes from here up are regions
+FIRST_TOTAL_ITEM_CODE = 1700                      # FAOSTAT item codes from here up are totals
 TO_TONNES_PER_HA = {"kg/ha": 1e-3, "hg/ha": 1e-4, "100 g/ha": 1e-4, "t/ha": 1.0}
-COLUMNS = ["item", "yield_t_ha", "yield_years", "area_ha", "price_usd_t", "price_years",
-           "world_yield_t_ha", "world_price_usd_t"]
+COLUMNS = ["item", "yield_t_ha", "yield_years", "area_ha", "price_usd_t", "price_low_usd_t",
+           "price_high_usd_t", "price_years", "world_yield_t_ha", "world_price_usd_t"]
 
 
 # --------------------------------------------------------------------------------------
@@ -85,7 +88,8 @@ def _read_bulk(name: str, columns: list[str]) -> pd.DataFrame:
     with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
         with archive.open(f"{name}.csv") as fh:
             df = pd.read_csv(fh, encoding="latin-1", usecols=columns, low_memory=False)
-    df = df[df["Area Code"] < FIRST_REGION_CODE]                 # countries only
+    df = df[(df["Area Code"] < FIRST_REGION_CODE)                # countries only
+            & (df["Item Code"] < FIRST_TOTAL_ITEM_CODE)].copy()  # single crops, not totals
     df["area_code"] = df["Area Code (M49)"].str.strip("'").astype(int)
     return df.rename(columns={"Item": "item", "Year": "year"})
 
@@ -93,7 +97,7 @@ def _read_bulk(name: str, columns: list[str]) -> pd.DataFrame:
 def _download_table() -> pd.DataFrame:
     """Every country's crop yield, area and farm price for the last YEARS_KEPT years."""
     keys = ["area_code", "item", "year"]
-    shared = ["Area Code", "Area Code (M49)", "Item", "Element", "Year", "Unit", "Value"]
+    shared = ["Area Code", "Area Code (M49)", "Item Code", "Item", "Element", "Year", "Unit", "Value"]
 
     prod = _read_bulk(PRODUCTION, shared)
     prod = prod[prod["year"] > prod["year"].max() - YEARS_KEPT]
@@ -128,7 +132,8 @@ def _load_table(refresh: bool = False) -> pd.DataFrame:
 def _recent_mean(table: pd.DataFrame, column: str, by: list[str]) -> pd.DataFrame:
     """Mean of `column` over each group's latest YEARS_AVERAGED years that have a value."""
     known = table.dropna(subset=[column]).sort_values("year").groupby(by).tail(YEARS_AVERAGED)
-    return known.groupby(by).agg(value=(column, "mean"), first=("year", "min"), last=("year", "max"))
+    return known.groupby(by).agg(value=(column, "mean"), low=(column, "min"), high=(column, "max"),
+                                 first=("year", "min"), last=("year", "max"))
 
 
 def summarise(table: pd.DataFrame, m49: int) -> pd.DataFrame:
@@ -143,6 +148,8 @@ def summarise(table: pd.DataFrame, m49: int) -> pd.DataFrame:
             out[column.split("_")[0] + "_years"] = years
             world = _recent_mean(table, column, ["area_code", "item"])["value"]
             out["world_" + column] = world.groupby("item").median()
+        if column == "price_usd_t":
+            out["price_low_usd_t"], out["price_high_usd_t"] = mean["low"], mean["high"]
     return out.reset_index()[COLUMNS]
 
 

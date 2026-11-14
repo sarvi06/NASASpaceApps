@@ -71,7 +71,7 @@ def test_crop_values_are_sane(crops):
         assert c.tmin <= c.topmn <= c.topmx <= c.tmax, c.sci
         assert 0 < c.gmin <= c.gmax, c.sci
         assert c.can_harvest or c.can_cover, c.sci
-        assert 0 <= c.value <= 1
+    assert not hasattr(c, "value") and not hasattr(c, "economics")       # agronomy only
 
 
 def test_soil_labels_are_read(crops):

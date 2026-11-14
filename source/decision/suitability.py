@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Callable, Iterable
 
 import pandas as pd
 
@@ -355,29 +355,29 @@ def score_cover(crop: Crop, start: int, months: int, clim: Climate,
 # --------------------------------------------------------------------------------------
 def build_slots(crops, clim: Climate, site: dict | None = None, irrigated: bool = False,
                 min_score: float = 0.4, per_start: int = 10, per_family: int = 3,
-                covers_per_start: int = 4, always: Iterable[str] = ()) -> dict[int, list[Slot]]:
+                covers_per_start: int = 4, always: Iterable[str] = (),
+                rank: Callable[[Slot], float] | None = None) -> dict[int, list[Slot]]:
     """For each planting month: the best harvest options and the best cover-crop options.
 
-    Harvest options are the first cut of the whole crop list: crops with a known income here
-    (all harvest crops if no crop has one) that suit the field (suitability >= min_score),
-    ranked by suitability x what the crop earns (crop.value), keeping the top `per_start`
-    with at most `per_family` from one family.
+    Harvest options are the first cut of the whole crop list: crops that suit the field
+    (suitability >= min_score), ordered by `rank`, keeping the top `per_start` with at most
+    `per_family` from one family.
+    rank    scores a harvest option, higher = better; options ranked 0 or less are dropped.
+            Default: suitability alone. The caller passes Economy.rank to rank by money too.
     always  scientific names kept as harvest options wherever they can grow at all, whatever
-            their income or rank (must-grow crops, crops the field already grows).
+            their rank (must-grow crops, crops the field already grows).
     """
     crops = list(crops.values()) if isinstance(crops, dict) else list(crops)
     always = set(always)
-    any_priced = any(c.economics for c in crops)
-    sellable = [c for c in crops
-                if c.sci in always or (c.can_harvest and (c.economics or not any_priced))]
+    rank = rank or (lambda slot: slot.score)
     by_start: dict[int, list[Slot]] = {}
     for m in range(12):
-        harvest = [s for c in sellable
+        harvest = [s for c in crops if c.can_harvest or c.sci in always
                    if (s := score_harvest(c, m, clim, site, irrigated))
                    and (s.score >= min_score or (c.sci in always and s.score > 0))]
-        harvest.sort(key=lambda s: -s.score * s.crop.value)
         kept, per_fam = [s for s in harvest if s.crop.sci in always], {}
-        ranked = [s for s in harvest if s.crop.sci not in always]
+        ranked = sorted((s for s in harvest if s.crop.sci not in always and rank(s) > 0),
+                        key=lambda s: -rank(s))
         for s in ranked:
             if per_fam.get(s.crop.family, 0) < per_family and sum(per_fam.values()) < per_start:
                 kept.append(s)

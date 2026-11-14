@@ -90,6 +90,7 @@ def test_summarise_averages_the_latest_five_years_with_data():
     rice = out.loc["Rice"]
     assert rice["yield_t_ha"] == pytest.approx(12.0) and rice["yield_years"] == "2020-2024"
     assert rice["price_usd_t"] == 1000.0 and rice["price_years"] == "2018-2022"   # skips the gaps
+    assert rice["price_low_usd_t"] == rice["price_high_usd_t"] == 1000.0
     assert rice["world_yield_t_ha"] == 8.0 and rice["world_price_usd_t"] == 500.0  # medians
     okra = out.loc["Okra"]                                           # not grown in Japan
     assert pd.isna(okra["yield_t_ha"]) and okra["world_yield_t_ha"] == 9.0

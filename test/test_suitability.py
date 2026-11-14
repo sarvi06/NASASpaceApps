@@ -82,26 +82,32 @@ def test_every_score_is_between_0_and_1(crops, iowa_climate, iowa_site):
             assert 0 <= s.score <= 1 and s.limiter and s.evidence
 
 
-def test_first_cut_is_priced_crops_ranked_by_suitability_times_income(crops, iowa_climate, iowa_site):
-    alfalfa = "Medicago sativa"
-    assert crops[alfalfa].economics is None and crops[alfalfa].can_harvest
-    slots = build_slots(crops, iowa_climate, iowa_site)
+def test_first_cut_follows_the_rank_it_is_given(crops, iowa_climate, iowa_site):
+    def harvests(slots):
+        return [s for month in slots.values() for s in month if s.use == "harvest"]
+
+    plain = build_slots(crops, iowa_climate, iowa_site)                  # default: suitability
+    for month in plain.values():
+        scores = [s.score for s in month if s.use == "harvest"]
+        assert scores == sorted(scores, reverse=True) and len(scores) <= 10
+
+    grasses_only = build_slots(crops, iowa_climate, iowa_site,
+                               rank=lambda s: s.score if s.crop.family == "Poaceae" else 0)
+    assert harvests(grasses_only) and all(s.crop.family == "Poaceae" for s in harvests(grasses_only))
+    assert any(s.use == "cover" and s.crop.family != "Poaceae"           # covers are not ranked
+               for month in grasses_only.values() for s in month)
+
+    kept = build_slots(crops, iowa_climate, iowa_site, rank=lambda s: 0, always={SOY})
+    assert {s.crop.sci for s in harvests(kept)} == {SOY}                 # `always` beats the rank
+
+
+def test_first_cut_with_an_economy_keeps_only_crops_that_can_be_sold(crops, economy, iowa_climate, iowa_site):
+    slots = build_slots(crops, iowa_climate, iowa_site, rank=economy.rank)
     harvest = [s for month in slots.values() for s in month if s.use == "harvest"]
-    assert harvest and all(s.crop.economics for s in harvest)          # unpriced crops cut
+    assert harvest and all(economy.get(s.crop) for s in harvest)
     for month in slots.values():
-        ranks = [s.score * s.crop.value for s in month if s.use == "harvest"]
+        ranks = [economy.rank(s) for s in month if s.use == "harvest"]
         assert ranks == sorted(ranks, reverse=True)
-    assert any(s.use == "cover" and not s.crop.economics for m in slots.values() for s in m)
-
-    kept = build_slots(crops, iowa_climate, iowa_site, always={alfalfa})
-    assert any(s.crop.sci == alfalfa and s.use == "harvest" for m in kept.values() for s in m)
-
-
-def test_without_any_prices_every_harvest_crop_is_a_candidate(crops, iowa_climate, iowa_site):
-    from dataclasses import replace
-    unpriced = {sci: replace(c, economics=None, value=0.1) for sci, c in crops.items()}
-    slots = build_slots(unpriced, iowa_climate, iowa_site)
-    assert any(s.use == "harvest" for month in slots.values() for s in month)
 
 
 def test_tropical_climate_changes_the_winners(crops):

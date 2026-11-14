@@ -8,7 +8,7 @@ category, life span) and everything else is a candidate. What each plant can be 
     raw = get_crop_requirements()                  # data_pullers/FAO_EcoCrop_pull.py
     crops = build_crops(raw, sold=SOLD_CROPS)      # {scientific name: Crop}
 
-`value` (0-1) and `economics` start empty; decision/economics.py fills them from FAOSTAT.
+A Crop holds agronomy only. What it earns is a separate question: decision/economics.py.
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ FORAGE_CATEGORY, COVER_CATEGORY = "forage/pasture", "cover crop"
 PERENNIALS_ALLOWED = {FORAGE_CATEGORY, COVER_CATEGORY, "roots/tubers"}
 
 HARDY_BELOW_C = -4      # EcoCrop "killing temperature at rest" at or below this = overwinters
-DEFAULT_VALUE = 0.5     # report-card value before any economics are known
 
 # Extra names people use that EcoCrop does not list.
 _ALIASES = {"maize": "Zea mays ssp. mays", "soy": "Glycine max", "soybeans": "Glycine max",
@@ -76,8 +75,6 @@ class Crop:
     fer_opt: str | None
     fer_abs: str | None
     other_names: frozenset = frozenset()    # every EcoCrop common name, lower case
-    value: float = DEFAULT_VALUE            # 0-1 earning power here (economics.with_economics)
-    economics: Any = None                   # economics.Economics, or None if no price is known
 
     @property
     def legume(self) -> bool:

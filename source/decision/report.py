@@ -5,6 +5,7 @@ Also the full text report printed by demo.py.
 
 from __future__ import annotations
 
+from .economics import Economy
 from .rotations import CARD, Rotation, calendar_grid
 from .sequence import AFTER_LEGUME, SAME_FAMILY, follow_score
 from .suitability import MONTHS
@@ -12,6 +13,9 @@ from .suitability import MONTHS
 DISCLAIMER = ("This tool highlights patterns and possibilities from NASA and USDA data. It does not "
               "replace your own judgement or local agricultural expertise: check any change with "
               "an agronomist or extension service before acting on it.")
+
+WIDELY_GROWN = 0.8     # market score at or above this is worth naming as a benefit
+RARELY_GROWN = 0.34    # market score below this (about 0.1% of the country's cropland) is a gap
 
 GLOSSARY = {
     "suitability": "0-1 score for how well the field's climate and soil match a crop's needs "
@@ -29,8 +33,12 @@ GLOSSARY = {
     "dormancy / winter-kill": "Overwintering crops (winter wheat, rye, vetch) stop growing in cold "
                               "months; if nights are colder than they tolerate, they can die.",
     "income per hectare": "Average yield x price paid to farmers in the field's country (FAOSTAT), "
-                          "in US dollars. It is income before costs unless you entered a cost "
-                          "for that crop. Your own prices replace FAOSTAT's.",
+                          "in US dollars. It is income before costs unless you entered costs. "
+                          "Your own price or yield replaces FAOSTAT's. It is scored against "
+                          "the country's typical hectare: 0.5 = typical, 1 = ten times typical.",
+    "local market": "How widely a crop is grown in the field's country (its share of harvested "
+                    "area, FAOSTAT). Widely grown crops have buyers, equipment and know-how; a "
+                    "crop almost nobody grows usually has high costs or few buyers.",
     "bare months": "Months with nothing growing, when soil is most exposed to wind and water "
                    "erosion and nutrients can wash out.",
 }
@@ -50,8 +58,10 @@ def _covered_per_year(rot: Rotation) -> float:
 
 
 def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
-            priority_name: str, familiar: set | None = None, used_smap: bool = False) -> dict:
+            priority_name: str, familiar: set | None = None, used_smap: bool = False,
+            economy: Economy | None = None) -> dict:
     """why / evidence / benefits / gaps / risks for one rotation (lists of plain sentences)."""
+    economy = economy or Economy()
     card, insights = rot.card, field.insights
     base_card = baseline.card if baseline else {}
 
@@ -79,8 +89,8 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
                         f"{MONTHS[a % 12]}-{MONTHS[(a + s.months - 1) % 12]}, year {a // 12 % rot.years + 1}): "
                         f"suitability {s.score:.2f}, limited by {s.limiter}.")
         evidence += [f"    {line}" for line in s.evidence]
-        if s.use == "harvest" and s.crop.economics:
-            evidence.append(f"    Money: {s.crop.economics.describe()}")
+        if s.use == "harvest" and economy.get(s.crop):
+            evidence.append(f"    Money: {economy.get(s.crop).describe()}")
 
     # ---- benefits ----
     benefits = []
@@ -99,12 +109,24 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
     if rot.covers:
         benefits.append(f"Cover crops ({_names(rot.covers)}) protect the soil between harvests and "
                         f"add organic matter as they break down.")
-    priced = [s for s in rot.harvests if s.crop.economics]
+    priced = [s for s in rot.harvests if economy.get(s.crop)]
+    gaps_first = ""
     if priced:
-        yearly = sum(s.crop.economics.income_usd_ha * s.score for s in priced) / rot.years
-        benefits.append(f"Estimated earnings of about ${yearly:,.0f} per hectare per year from "
-                        f"{_names(priced)} (average yields scaled by how well each crop suits "
-                        f"the field; see Money lines above).")
+        typical = (f"; the typical hectare in {economy.country or 'this country'} earns about "
+                   f"${economy.typical_income:,.0f}" if economy.typical_income else "")
+        benefits.append(f"Estimated earnings of about ${rot.income_usd_ha:,.0f} per hectare per year "
+                        f"from {_names(priced)} (average yields scaled by how well each crop suits "
+                        f"the field{typical}; see Money lines above).")
+        if rot.trusted_income_usd_ha < 0.9 * rot.income_usd_ha:
+            gaps_first = (f"Only about ${rot.trusted_income_usd_ha:,.0f} of the "
+                          f"${rot.income_usd_ha:,.0f} per hectare per year is counted in the score: "
+                          f"income far above the typical hectare from a crop few farmers here grow "
+                          f"usually means high costs or few buyers that FAOSTAT does not show. Enter "
+                          f"your own price or cost for a crop to have its income counted in full.")
+    established = [s for s in priced if economy.market(s.crop) >= WIDELY_GROWN]
+    if established:
+        benefits.append(f"{_names(established)} {_verb(established, 'is', 'are')} widely grown in "
+                        f"{economy.country or 'this country'}, so buyers, equipment and know-how exist.")
     families = len({s.crop.family for s in rot.slots})
     base_families = len({s.crop.family for s in baseline.slots}) if baseline else 0
     if families > base_families:
@@ -119,24 +141,39 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
         benefits.append(f"{_names(forage)} can also be grazed or cut for forage/hay.")
 
     # ---- information gaps ----
-    gaps = list(dict.fromkeys(g for s in rot.slots for g in s.gaps))
+    gaps = ([gaps_first] if gaps_first else []) + list(dict.fromkeys(g for s in rot.slots for g in s.gaps))
     unfamiliar = [s for s in rot.harvests if familiar and s.crop.sci not in familiar]
     if unfamiliar:
         gaps.append(f"{_names(unfamiliar)} {_verb(unfamiliar, 'has', 'have')} not been grown on this "
                     f"field (CropScape): local buyers, prices, equipment and storage are unknown.")
-    unpriced = [s for s in rot.harvests if not s.crop.economics]
-    if unpriced:
-        gaps.append(f"No price or yield for {_names(unpriced)} in this country (FAOSTAT), so "
-                    f"{_verb(unpriced, 'it counts', 'they count')} as low income; enter your own "
-                    f"price if you can sell {_verb(unpriced, 'it', 'them')}.")
+    unpriced = [s for s in rot.harvests if not economy.get(s.crop)]
+    if unpriced and economy.crops:
+        gaps.append(f"No price or yield for {_names(unpriced)} (FAOSTAT), so "
+                    f"{_verb(unpriced, 'it counts', 'they count')} as no income; enter your own "
+                    f"price and yield if you can sell {_verb(unpriced, 'it', 'them')}.")
     if priced:
         gaps.append("Prices and yields are national yearly averages (FAOSTAT), not local ones; "
-                    "enter your own prices to correct them.")
-    no_cost = [s for s in priced if s.crop.economics.cost_usd_ha is None]
+                    "enter your own price or yield to correct them.")
+    estimated = [s for s in priced if "estimate" in economy.get(s.crop).price_source
+                 or "world median" in economy.get(s.crop).yield_source]
+    if estimated:
+        gaps.append(f"The price or yield of {_names(estimated)} is an estimate from world figures, "
+                    f"because FAOSTAT has no local one.")
+    niche = [s for s in priced if economy.market(s.crop) < RARELY_GROWN]
+    if niche:
+        gaps.append(f"{_names(niche)} {_verb(niche, 'is', 'are')} rarely or never grown in "
+                    f"{economy.country or 'this country'} (FAOSTAT area harvested): check there is "
+                    f"a buyer, and the labour and equipment, before planting.")
+    no_cost = [s for s in priced if economy.get(s.crop).cost_usd_ha is None]
     if no_cost:
         gaps.append(f"Costs (seed, fertiliser, labour, machinery) are not included for "
                     f"{_names(no_cost)}: FAOSTAT holds none, so high-cost crops such as vegetables "
-                    f"look better than they are. Enter your costs to compare on profit.")
+                    f"earn less than shown. Enter your costs to compare on profit.")
+    guessed = [s for s in priced if economy.get(s.crop).cost_source.startswith("estimated")]
+    if guessed:
+        gaps.append(f"The cost of {_names(guessed)} is assumed to be {economy.cost_share:.0%} of "
+                    f"income, the share in the costs you entered, so that every crop is compared "
+                    f"on profit. Enter the real cost if it differs.")
     gaps.append("EcoCrop ranges are for the species as a whole; local varieties can differ.")
     gaps.append("NASA POWER climate is a ~50 km grid average, not a measurement at the field.")
     if not used_smap:
@@ -244,9 +281,17 @@ def text_report(rec) -> str:
     lines += _field_summary(rec.field) + [_previous_crop_line(rec.previous_crop)]
     if rec.must_grow:
         lines.append("Must grow (in every option): " + ", ".join(rec.must_grow))
-    lines.append(f"Prices and yields: FAOSTAT national averages for {rec.country['name']}, "
-                 f"{len(rec.economics)} crops priced" if rec.country and rec.economics
-                 else "Prices and yields: none available, so income did not affect the ranking")
+    economy = rec.economy
+    if economy.crops:
+        lines.append(f"Prices and yields: {len(economy.crops)} crops priced"
+                     + (f", FAOSTAT national averages for {economy.country}" if economy.country else "")
+                     + (f"; the typical hectare there earns about ${economy.typical_income:,.0f}"
+                        if economy.typical_income else ""))
+        if economy.cost_share is not None:
+            lines.append(f"Costs: yours where entered; other crops assumed at {economy.cost_share:.0%} "
+                         f"of income, the share in the costs you entered")
+    else:
+        lines.append("Prices and yields: none available, so income and market did not affect the ranking")
     if rec.warnings:
         lines += ["", "Notes:"] + [f"  ! {w}" for w in rec.warnings]
     lines += ["", f"Priorities: {rec.priority_name}  (" + ", ".join(
