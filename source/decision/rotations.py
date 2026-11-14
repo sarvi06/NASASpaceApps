@@ -2,24 +2,26 @@
 
 1. search_rotations()  tries many multi-year sequences of harvest crops and cover crops
                        (beam search: keep the best few hundred partial plans at each step).
-   Hard rules:  no two harvest crops of the same family back to back (pest/disease break),
-                a cover crop is never followed by a harvest crop of its own family,
-                no cover after a cover, at least one harvest crop per year.
-2. score_card()        rates a rotation 0-1 on six things the brief asks about:
-                       fit, soil cover, nitrogen, diversity, water, income.
+   Hard rules:  what may follow what (sequence.can_follow), at least one harvest crop per year.
+2. score_card()        rates a rotation 0-1 on seven things:
+                       fit, soil cover, nitrogen, diversity, crop order, water, income.
+                       Crop order = how well each harvest crop follows the crop before it
+                       (sequence.follow_score).
 3. overall score       = weighted sum, weights set by the farmer's priority
                        (balanced / save_water / build_soil / extra_income).
 4. pick_top()          best 3 rotations that are clearly different from each other.
-5. baseline_rotation() scores the field's current rotation on the same card for comparison.
+5. start_after()       a rotation is a cycle: start it in the year that best follows the
+                       crop the field grew last.
+6. baseline_rotation() scores the field's current rotation on the same card for comparison.
 """
 
 from __future__ import annotations
 
-import math
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .crops import Crop
+from .sequence import can_follow, follow_score
 from .suitability import MONTHS, Climate, Slot, score_harvest
 
 # --------------------------------------------------------------------------------------
@@ -30,15 +32,16 @@ CARD = {
     "cover": "soil covered (months not bare)",
     "nitrogen": "nitrogen from legumes",
     "diversity": "crop diversity (pest & disease break)",
+    "sequence": "crop order (each crop suits the one before it)",
     "water": "low water demand",
     "income": "income potential (indicative)",
 }
 
 PRIORITY_PRESETS = {
-    "balanced":     dict(fit=.30, cover=.15, nitrogen=.15, diversity=.15, water=.10, income=.15),
-    "save_water":   dict(fit=.25, cover=.10, nitrogen=.10, diversity=.10, water=.35, income=.10),
-    "build_soil":   dict(fit=.20, cover=.30, nitrogen=.20, diversity=.15, water=.05, income=.10),
-    "extra_income": dict(fit=.25, cover=.10, nitrogen=.10, diversity=.10, water=.10, income=.35),
+    "balanced":     dict(fit=.25, cover=.15, nitrogen=.15, diversity=.10, sequence=.10, water=.10, income=.15),
+    "save_water":   dict(fit=.25, cover=.10, nitrogen=.10, diversity=.05, sequence=.05, water=.35, income=.10),
+    "build_soil":   dict(fit=.20, cover=.30, nitrogen=.15, diversity=.10, sequence=.10, water=.05, income=.10),
+    "extra_income": dict(fit=.25, cover=.10, nitrogen=.10, diversity=.05, sequence=.05, water=.10, income=.35),
 }
 
 UNFAMILIAR_VALUE = 0.75     # income value kept for crops the field hasn't grown (market/equipment unknown)
@@ -117,6 +120,7 @@ class Rotation:
     overall: float = 0.0
     is_baseline: bool = False
     strategy: str = ""             # why it was picked, e.g. "best for your priority"
+    start_note: str = ""           # why it starts with this crop, given the field's last crop
     explanation: dict = field(default_factory=dict)
 
     @property
@@ -134,6 +138,11 @@ class Rotation:
     @property
     def covers(self) -> list[Slot]:
         return [s for s in self.slots if s.use == "cover"]
+
+    def hand_overs(self) -> list[tuple[Slot, Slot]]:
+        """(crop before, harvest crop) for every harvest crop; the first follows the last."""
+        slots = self.slots
+        return [(slots[i - 1], s) for i, s in enumerate(slots) if s.use == "harvest"]
 
     def covered_months(self) -> set[int]:
         out = set()
@@ -161,6 +170,7 @@ class Rotation:
             "years": self.years,
             "is_current_rotation": self.is_baseline,
             "strategy": self.strategy,
+            "start_note": self.start_note,
             "overall": round(self.overall, 3),
             "card": {k: round(v, 3) for k, v in self.card.items()},
             "steps": [{
@@ -186,11 +196,13 @@ def score_card(rot: Rotation, clim: Climate, insights: dict | None = None,
     cover = len(rot.covered_months()) / rot.horizon
     nitrogen = min(1.0, sum(_legume_n(s) for s in slots) / (rot.years * 0.5))
     diversity = min(1.0, (len({s.crop.family for s in slots}) - 1) / 3)
+    pairs = rot.hand_overs()
+    sequence = sum(follow_score(a.crop, b.crop)[0] for a, b in pairs) / len(pairs) if pairs else 0.0
     rain = expected_rain(clim, insights)
     water = sum(water_score(s.crop, rain) for s in harvests) / len(harvests) if harvests else 0.0
     income = min(1.0, sum(crop_value(s.crop, familiar) * s.score for s in harvests) / rot.years)
     return {"fit": fit, "cover": cover, "nitrogen": nitrogen, "diversity": diversity,
-            "water": water, "income": income}
+            "sequence": sequence, "water": water, "income": income}
 
 
 def rate(rot: Rotation, clim: Climate, weights: dict, insights: dict | None = None,
@@ -222,16 +234,9 @@ def _gain(st: _State, slot: Slot, horizon: int, years: int, weights: dict, rain:
           max_harvests: int = 99, familiar: set | None = None) -> float | None:
     """Approximate report-card increase from appending `slot`, or None if it breaks a rule."""
     last = st.placed[-1][1]
-    prev_harvest = _last_harvest(st.placed)
     c = slot.crop
-    if slot.use == "harvest":
-        if prev_harvest is not None and prev_harvest.crop.family == c.family:
-            return None                                 # same family twice in a row
-        if last.use == "cover" and last.crop.family == c.family:
-            return None                                 # e.g. rye cover then corn
-    else:
-        if last.use == "cover" or last.crop.sci == c.sci:
-            return None
+    if not can_follow(last, _last_harvest(st.placed), slot):
+        return None
     n_same = sum(1 for _, s in st.placed if s.crop.sci == c.sci)
     if slot.use == "harvest" and sum(1 for _, s in st.placed if s.use == "harvest") >= max_harvests:
         return None
@@ -242,6 +247,7 @@ def _gain(st: _State, slot: Slot, horizon: int, years: int, weights: dict, rain:
     if slot.use == "harvest":
         g += weights["income"] * crop_value(c, familiar) * slot.score / years
         g += weights["water"] * water_score(c, rain) / years
+        g += weights["sequence"] * follow_score(last.crop, c)[0] / years
     g -= 0.05 * n_same                                  # same crop again (harvest or cover)
     if c.family not in {s.crop.family for _, s in st.placed}:
         g += weights["diversity"] / 3
@@ -368,6 +374,28 @@ def pick_top(rotations: list[Rotation], n: int = 3, familiar: set | None = None,
         if r not in chosen and distinct(r):
             take(r, "a different direction worth comparing")
     return chosen
+
+
+# --------------------------------------------------------------------------------------
+# Where to start the cycle, given what the field grew last
+# --------------------------------------------------------------------------------------
+def start_after(rot: Rotation, previous: Crop) -> Rotation:
+    """The same rotation, started in the year whose first harvest crop best follows `previous`.
+
+    A rotation repeats, so its scores don't depend on where it starts; the field's last crop
+    only decides which year of the cycle to begin with. Ties keep the earlier year."""
+    def from_year(k: int) -> tuple:
+        return tuple(sorted((((a - 12 * k) % rot.horizon, s) for a, s in rot.placed),
+                            key=lambda p: p[0]))
+
+    def first_harvest(placed: tuple) -> Crop:
+        return next(s.crop for _, s in placed if s.use == "harvest")
+
+    options = [from_year(k) for k in range(rot.years)]
+    best = max(options, key=lambda placed: follow_score(previous, first_harvest(placed))[0])
+    reason = follow_score(previous, first_harvest(best))[1]
+    return replace(rot, placed=best, start_note=f"Starts this way because the field last grew "
+                                                f"{previous.name} ({reason}).")
 
 
 # --------------------------------------------------------------------------------------

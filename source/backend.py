@@ -14,7 +14,9 @@ What happens inside:
   3. decision/field_profile.py  -> one FieldProfile (climate, soil, trends, current rotation)
   4. decision/crops.py          -> candidate crops
   5. decision/suitability.py    -> score every crop x planting month
-  6. decision/rotations.py      -> search rotations, rate them, pick the top 3, score the current one
+  6. decision/rotations.py      -> search rotations, rate them, pick the top 3, score the current one,
+                                   start each in the year that best follows the crop grown last
+                                   (decision/sequence.py holds the "what can follow what" rules)
   7. decision/report.py         -> why / evidence / benefits / gaps / risks
 """
 
@@ -34,7 +36,8 @@ from decision import report
 from decision.crops import build_crops, find_crop
 from decision.field_profile import CDL_TO_ECOCROP, FieldProfile, _json_safe, build_field_profile
 from decision.rotations import (CARD, PRIORITY_PRESETS, Rotation, baseline_rotation, pick_top,
-                                resolve_priorities, search_rotations)
+                                resolve_priorities, search_rotations, start_after)
+from decision.sequence import follow_score
 from decision.suitability import Climate, Slot, best_single_crops, build_slots
 
 MIN_DAYS = 365          # need a full year of climate to build monthly averages
@@ -49,6 +52,7 @@ class Recommendation:
     best_crops: list[Slot]                  # best single harvest crops for the field
     weights: dict                           # how much each report-card item counted
     priority_name: str
+    previous_crop: dict | None = None       # {"crop", "scientific_name", "source"}: grown last
     warnings: list[str] = field(default_factory=list)
     data_sources: list[str] = field(default_factory=list)
     inputs: dict = field(default_factory=dict)
@@ -61,6 +65,7 @@ class Recommendation:
             "inputs": self.inputs,
             "field": self.field.to_dict(),
             "priorities": {"name": self.priority_name, "weights": self.weights, "card_items": CARD},
+            "previous_crop": self.previous_crop,
             "current_rotation": self.baseline.to_dict() if self.baseline else None,
             "recommended_rotations": [r.to_dict() for r in self.rotations],
             "best_single_crops": [{"crop": s.crop.name, "scientific_name": s.crop.sci,
@@ -77,7 +82,8 @@ class Recommendation:
 def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced",
               current_rotation: list[str] | None = None, rotation_years: int = 3,
               irrigated: bool = False, use_smap: bool = False,
-              on_progress: Callable[[str], None] | None = None) -> Recommendation:
+              on_progress: Callable[[str], None] | None = None,
+              previous_crop: str | None = None) -> Recommendation:
     """Top 3 crop rotations for a location, using data between start_date and end_date.
 
     lat, lon          decimal degrees
@@ -89,6 +95,9 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
     irrigated         True = ignore rainfall limits
     use_smap          also pull NASA SMAP soil moisture (needs an Earthdata login; slow)
     on_progress       optional function called with short status messages
+    previous_crop     the crop grown last, e.g. "corn"; default = the latest year in USDA
+                      CropScape, else the last crop of current_rotation. Each suggested
+                      rotation starts in the year that best follows it.
     """
     say = on_progress or (lambda msg: None)
     warnings: list[str] = []
@@ -191,6 +200,18 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
     if len(top) < 3:
         warnings.append(f"Only {len(top)} distinct rotation(s) suit this field's climate and soil.")
 
+    previous = _previous_crop(previous_crop, history, given, crops)
+    if previous:
+        last_grown = crops[previous["scientific_name"]]
+        top = [start_after(rot, last_grown) for rot in top]
+        clash = [rot.name for rot in top if follow_score(last_grown, rot.harvests[0].crop)[0] == 0]
+        if clash:
+            warnings.append(f"Every starting point of {'; '.join(clash)} puts a crop of the same "
+                            f"family right after {last_grown.name}, the crop grown last.")
+    else:
+        warnings.append("The crop grown last is unknown, so the rotations start in an arbitrary "
+                        "year (pass previous_crop to fix this).")
+
     baseline = None
     if fp.current_rotation:
         current_crops = [crops[s] for s in fp.current_rotation["scientific"] if s in crops]
@@ -206,9 +227,11 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
     say("Done.")
     return Recommendation(
         field=fp, rotations=top, baseline=baseline, best_crops=best_single_crops(by_start),
-        weights=weights, priority_name=priority_name, warnings=warnings, data_sources=sources,
+        weights=weights, priority_name=priority_name, previous_crop=previous,
+        warnings=warnings, data_sources=sources,
         inputs={"lat": lat, "lon": lon, "start_date": str(start), "end_date": str(end),
                 "priorities": priorities, "current_rotation": current_rotation,
+                "previous_crop": previous_crop,
                 "rotation_years": rotation_years, "irrigated": irrigated, "use_smap": use_smap},
     )
 
@@ -223,6 +246,26 @@ def _resolve_current(names: list[str], crops: dict) -> dict:
         raise ValueError(f"Unknown crop name(s) {unknown}. Known crops: {known}.")
     return {"crops": [c.name for c in found], "scientific": [c.sci for c in found],
             "source": "entered by you", "repeating": True}
+
+
+def _previous_crop(name: str | None, history: pd.DataFrame, given: dict | None,
+                   crops: dict) -> dict | None:
+    """The crop grown last: the name passed in, else the latest CropScape year, else the last
+    crop of the rotation the user entered. None if none of those is known."""
+    def answer(sci: str, source: str) -> dict:
+        return {"crop": crops[sci].name, "scientific_name": sci, "source": source}
+
+    if name:
+        return answer(_resolve_current([name], crops)["scientific"][0], "entered by you")
+    known = history.dropna(subset=["crop"]) if "crop" in history else history
+    if not known.empty:
+        latest = known.sort_values("year").iloc[-1]
+        sci = CDL_TO_ECOCROP.get(latest["crop"])
+        if sci in crops:
+            return answer(sci, f"USDA CropScape {int(latest['year'])}")
+    if given and given["scientific"]:
+        return answer(given["scientific"][-1], "last crop of the rotation you entered")
+    return None
 
 
 __all__ = ["recommend", "Recommendation", "PRIORITY_PRESETS"]

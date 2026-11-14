@@ -44,6 +44,33 @@ def test_priorities_and_user_rotation(offline):
     assert rec.baseline.years == 3
 
 
+def test_previous_crop_decides_where_each_rotation_starts(offline):
+    args = (42.065, -93.73, "2015-01-01", "2024-12-31")
+    default = backend.recommend(*args)                      # CropScape: soybean in 2024
+    assert default.previous_crop == {"crop": "soybean", "scientific_name": "Glycine max",
+                                     "source": "USDA CropScape 2024"}
+    for previous, family in (("corn", "Poaceae"), ("soybean", "Fabaceae")):
+        rec = backend.recommend(*args, previous_crop=previous)
+        assert rec.previous_crop["crop"] == previous and rec.previous_crop["source"] == "entered by you"
+        assert [r.canonical() for r in rec.rotations] == [r.canonical() for r in default.rotations]
+        for rot in rec.rotations:
+            assert rot.harvests[0].crop.family != family
+            assert previous in rot.start_note and rot.start_note in rot.explanation["why"]
+        assert f": {previous}" in rec.to_text()
+        assert rec.to_dict()["previous_crop"]["crop"] == previous
+
+
+def test_previous_crop_falls_back_to_the_entered_rotation(offline, monkeypatch):
+    monkeypatch.setattr(backend, "in_contiguous_us", lambda lat, lon: False)
+    args = (42.065, -93.73, "2015-01-01", "2024-12-31")
+    rec = backend.recommend(*args, current_rotation=["soybean", "corn"])
+    assert rec.previous_crop["crop"] == "corn"
+    unknown = backend.recommend(*args)
+    assert unknown.previous_crop is None
+    assert any("grown last is unknown" in w for w in unknown.warnings)
+    assert all(not r.start_note for r in unknown.rotations)
+
+
 def test_smap_failure_is_a_warning_not_a_crash(offline):
     rec = backend.recommend(42.065, -93.73, "2018-01-01", "2024-12-31", use_smap=True)
     assert any("SMAP" in w for w in rec.warnings)
@@ -61,6 +88,7 @@ def test_short_period_warns(offline):
     (dict(priorities="money"), "priorities"),
     (dict(rotation_years=7), "rotation_years"),
     (dict(current_rotation=["bananas"]), "Unknown crop"),
+    (dict(previous_crop="bananas"), "Unknown crop"),
 ])
 def test_bad_inputs_give_clear_errors(offline, kwargs, message):
     args = dict(lat=42.065, lon=-93.73, start_date="2015-01-01", end_date="2024-12-31") | kwargs

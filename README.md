@@ -60,7 +60,8 @@ front end / demo.py  ->  backend.recommend()
 | `source/decision/field_profile.py` | Turns the raw data into one `FieldProfile` |
 | `source/decision/crops.py` | The curated candidate crop list (family, role, value, winter hardiness) |
 | `source/decision/suitability.py` | Scores each crop for each planting month (harvest or cover crop) |
-| `source/decision/rotations.py` | Rotation search, report card, farmer priorities, top-3 picking, current rotation |
+| `source/decision/sequence.py` | What can follow what: banned sequences, and a 0-1 score for each crop hand-over |
+| `source/decision/rotations.py` | Rotation search, report card, farmer priorities, top-3 picking, where to start after the last crop, current rotation |
 | `source/decision/report.py` | Plain-English explanations, glossary, text report |
 
 ### Requesting data directly

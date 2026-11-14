@@ -32,6 +32,9 @@ def main(argv=None) -> int:
                    help="what matters most to the farmer")
     p.add_argument("--current", nargs="*", default=None,
                    help="current rotation, e.g. --current corn soybean (default: from CropScape)")
+    p.add_argument("--previous", default=None,
+                   help="crop grown last, e.g. --previous corn (default: latest CropScape year, "
+                        "else the last crop of --current)")
     p.add_argument("--years", type=int, default=3, help="length of suggested rotations (1-4)")
     p.add_argument("--irrigated", action="store_true", help="field is irrigated (ignore rainfall)")
     p.add_argument("--smap", action="store_true",
@@ -41,7 +44,8 @@ def main(argv=None) -> int:
 
     try:
         rec = recommend(args.lat, args.lon, args.start, args.end, priorities=args.priority,
-                        current_rotation=args.current, rotation_years=args.years,
+                        current_rotation=args.current, previous_crop=args.previous,
+                        rotation_years=args.years,
                         irrigated=args.irrigated, use_smap=args.smap,
                         on_progress=lambda msg: print(f"[..] {msg}", file=sys.stderr))
     except (ValueError, RuntimeError) as exc:

@@ -6,6 +6,7 @@ Also the full text report printed by demo.py.
 from __future__ import annotations
 
 from .rotations import CARD, Rotation, calendar_grid
+from .sequence import AFTER_LEGUME, SAME_FAMILY, follow_score
 from .suitability import MONTHS
 
 DISCLAIMER = ("This tool highlights patterns and possibilities from NASA and USDA data. It does not "
@@ -64,6 +65,9 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
                f"'{priority_name}' priorities"
                + (f", against {baseline.overall:.2f} for your current rotation" if baseline else "")
                + f". Strongest points: {'; '.join(strengths)}.")
+        if rot.start_note:
+            why += " " + rot.start_note
+    hand_overs = [follow_score(a.crop, b.crop) for a, b in rot.hand_overs()]
 
     # ---- evidence ----
     evidence = []
@@ -84,6 +88,9 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
     if legumes:
         benefits.append(f"{_names(legumes)} {_verb(legumes, 'fixes', 'fix')} nitrogen from the air, "
                         f"lowering fertiliser needs for the crop that follows.")
+    good_order = list(dict.fromkeys(reason for score, reason in hand_overs if score >= AFTER_LEGUME))
+    if good_order:
+        benefits.append("Crop order: " + "; ".join(good_order) + ".")
     if rot.covers:
         benefits.append(f"Cover crops ({_names(rot.covers)}) protect the soil between harvests and "
                         f"add organic matter as they break down.")
@@ -120,6 +127,8 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
 
     # ---- risks ----
     risks = list(dict.fromkeys(f for s in rot.slots for f in s.flags))
+    risks += list(dict.fromkeys(f"Crop order: {reason}." for score, reason in hand_overs
+                                if score <= SAME_FAMILY))
     trend = insights.get("rain_trend_mm_per_decade")
     if trend is not None and trend < 0:
         risks.append(f"Rainfall trended down by about {-trend:.0f} mm per decade over the period "
@@ -190,6 +199,12 @@ def _field_summary(field) -> list[str]:
     return lines
 
 
+def _previous_crop_line(previous: dict | None) -> str:
+    if previous:
+        return f"Crop grown last ({previous['source']}): {previous['crop']}"
+    return "Crop grown last: unknown (pass --previous to add it)"
+
+
 def _rotation_block(rot: Rotation, title: str) -> list[str]:
     e = rot.explanation
     lines = [title, "-" * len(title), rot.name, "", calendar_grid(rot), "",
@@ -208,7 +223,7 @@ def text_report(rec) -> str:
     """The whole recommendation as printable text."""
     bar = "=" * 90
     lines = [bar, "  FIELD SHIFT - crop rotation options", bar, ""]
-    lines += _field_summary(rec.field)
+    lines += _field_summary(rec.field) + [_previous_crop_line(rec.previous_crop)]
     if rec.warnings:
         lines += ["", "Notes:"] + [f"  ! {w}" for w in rec.warnings]
     lines += ["", f"Priorities: {rec.priority_name}  (" + ", ".join(

@@ -87,6 +87,32 @@ def test_baseline_corn_soy_is_scored_and_beaten(iowa_search, crops):
     assert found[0].card["cover"] > base.card["cover"]
 
 
+def test_report_card_scores_crop_order(iowa_search, crops):
+    clim, site, weights, familiar, found = iowa_search
+    assert set(found[0].card) == set(R.CARD) and "sequence" in R.CARD
+
+    def card(names):
+        return R.baseline_rotation([crops[n] for n in names], clim, weights, site).card
+
+    assert card([CORN, CORN])["sequence"] == 0                      # corn after corn
+    assert card([CORN, SOY])["sequence"] > card([CORN, "Helianthus annuus"])["sequence"] > 0
+
+
+def test_start_after_enters_the_cycle_where_it_suits_the_last_crop(iowa_search, crops):
+    *_, found = iowa_search
+    for rot in found[:50]:
+        for previous in (crops[CORN], crops[SOY]):
+            started = R.start_after(rot, previous)
+            assert started.canonical() == rot.canonical()           # same rotation, same months
+            assert started.card == rot.card and started.overall == rot.overall
+            assert previous.name in started.start_note
+            assert [a for a, _ in started.placed] == sorted(a for a, _ in started.placed)
+            assert 0 <= started.placed[0][0] < 12
+            families = {s.crop.family for s in rot.harvests}
+            if families - {previous.family}:                        # another entry point exists
+                assert started.harvests[0].crop.family != previous.family
+
+
 def test_calendar_grid(iowa_search):
     *_, found = iowa_search
     grid = R.calendar_grid(found[0])
