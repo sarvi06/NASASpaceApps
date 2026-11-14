@@ -4,6 +4,8 @@ Run from the repo root:
     .venv\\Scripts\\python.exe source\\pull_test_field.py
 """
 
+import json
+
 from data_pull.config import DATA_DIR, TEST_FIELD
 from data_pull.cropscape import fetch_crop_history
 from data_pull.power import fetch_power_daily
@@ -20,6 +22,10 @@ def main() -> None:
     print("[1/3] NASA POWER climate ...")
     climate = fetch_power_daily(field.lat, field.lon, "20150101", "20241231")
     climate.to_csv(out_dir / "power_daily.csv")
+    # Field location details that don't fit in the CSVs.
+    field_info = {"name": field.name, "lat": field.lat, "lon": field.lon,
+                  "elevation_m": climate.attrs["elevation_m"]}
+    (out_dir / "field_info.json").write_text(json.dumps(field_info, indent=2))
     yearly = climate.groupby(climate.index.year).agg(
         mean_temp_c=("T2M", "mean"),
         rain_mm=("PRECTOTCORR", "sum"),

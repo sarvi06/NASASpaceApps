@@ -28,7 +28,11 @@ FILL_VALUE = -999.0  # POWER's marker for "no data"
 
 
 def fetch_power_daily(lat: float, lon: float, start: str, end: str) -> pd.DataFrame:
-    """Return one row per day between start and end (YYYYMMDD, inclusive)."""
+    """Return one row per day between start and end (YYYYMMDD, inclusive).
+
+    The point's elevation (metres, from POWER's terrain model) is kept in
+    df.attrs["elevation_m"].
+    """
     params = {
         "parameters": ",".join(PARAMETERS),
         "community": "AG",
@@ -40,9 +44,12 @@ def fetch_power_daily(lat: float, lon: float, start: str, end: str) -> pd.DataFr
     }
     resp = requests.get(URL, params=params, timeout=TIMEOUT)
     resp.raise_for_status()
-    data = resp.json()["properties"]["parameter"]
+    body = resp.json()
+    data = body["properties"]["parameter"]
 
     df = pd.DataFrame(data)  # columns = parameters, index = "YYYYMMDD"
     df.index = pd.to_datetime(df.index, format="%Y%m%d")
     df.index.name = "date"
-    return df.replace(FILL_VALUE, float("nan"))
+    df = df.replace(FILL_VALUE, float("nan"))
+    df.attrs["elevation_m"] = body["geometry"]["coordinates"][2]  # [lon, lat, elevation]
+    return df

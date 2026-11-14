@@ -34,6 +34,9 @@ COLUMNS = {
     "awc_r": "available water capacity (cm water / cm soil)",
     "kwfact": "erodibility factor K (higher = more erodible)",
     "ph1to1h2o_r": "pH",
+    "ec_r": "electrical conductivity, i.e. salinity (dS/m)",
+    "soil_depth_cm": "depth to the bottom of the deepest described horizon (cm)",
+    "restriction_depth_cm": "depth to the shallowest root-restricting layer, if any (cm)",
 }
 
 
@@ -53,7 +56,10 @@ def fetch_soil_at_point(lat: float, lon: float) -> pd.DataFrame:
     SELECT mu.mukey, mu.muname,
            c.compname, c.comppct_r, c.majcompflag, c.slope_r, c.drainagecl, c.hydgrp,
            h.hzdepb_r, h.om_r, h.sandtotal_r, h.silttotal_r, h.claytotal_r,
-           h.awc_r, h.kwfact, h.ph1to1h2o_r
+           h.awc_r, h.kwfact, h.ph1to1h2o_r, h.ec_r,
+           (SELECT MAX(h2.hzdepb_r) FROM chorizon h2 WHERE h2.cokey = c.cokey) AS soil_depth_cm,
+           (SELECT MIN(r.resdept_r) FROM corestrictions r WHERE r.cokey = c.cokey)
+               AS restriction_depth_cm
     FROM mapunit mu
     JOIN component c ON c.mukey = mu.mukey
     LEFT JOIN chorizon h ON h.cokey = c.cokey AND h.hzdept_r = 0
@@ -65,7 +71,8 @@ def fetch_soil_at_point(lat: float, lon: float) -> pd.DataFrame:
     df = _query(sql)
     # SDA returns everything as strings; convert the numeric columns.
     numeric = ["comppct_r", "slope_r", "hzdepb_r", "om_r", "sandtotal_r", "silttotal_r",
-               "claytotal_r", "awc_r", "kwfact", "ph1to1h2o_r"]
+               "claytotal_r", "awc_r", "kwfact", "ph1to1h2o_r", "ec_r",
+               "soil_depth_cm", "restriction_depth_cm"]
     for col in numeric:
         if col in df:
             df[col] = pd.to_numeric(df[col], errors="coerce")
