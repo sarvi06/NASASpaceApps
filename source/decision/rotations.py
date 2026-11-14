@@ -1,0 +1,411 @@
+"""Find crop rotations, score each on a report card, and pick the top 3 (plus the current one).
+
+1. search_rotations()  tries many multi-year sequences of harvest crops and cover crops
+                       (beam search: keep the best few hundred partial plans at each step).
+   Hard rules:  no two harvest crops of the same family back to back (pest/disease break),
+                a cover crop is never followed by a harvest crop of its own family,
+                no cover after a cover, at least one harvest crop per year.
+2. score_card()        rates a rotation 0-1 on six things the brief asks about:
+                       fit, soil cover, nitrogen, diversity, water, income.
+3. overall score       = weighted sum, weights set by the farmer's priority
+                       (balanced / save_water / build_soil / extra_income).
+4. pick_top()          best 3 rotations that are clearly different from each other.
+5. baseline_rotation() scores the field's current rotation on the same card for comparison.
+"""
+
+from __future__ import annotations
+
+import math
+from collections import defaultdict
+from dataclasses import dataclass, field
+
+from .crops import Crop
+from .suitability import MONTHS, Climate, Slot, score_harvest
+
+# --------------------------------------------------------------------------------------
+# Report card and farmer priorities
+# --------------------------------------------------------------------------------------
+CARD = {
+    "fit": "climate & soil fit",
+    "cover": "soil covered (months not bare)",
+    "nitrogen": "nitrogen from legumes",
+    "diversity": "crop diversity (pest & disease break)",
+    "water": "low water demand",
+    "income": "income potential (indicative)",
+}
+
+PRIORITY_PRESETS = {
+    "balanced":     dict(fit=.30, cover=.15, nitrogen=.15, diversity=.15, water=.10, income=.15),
+    "save_water":   dict(fit=.25, cover=.10, nitrogen=.10, diversity=.10, water=.35, income=.10),
+    "build_soil":   dict(fit=.20, cover=.30, nitrogen=.20, diversity=.15, water=.05, income=.10),
+    "extra_income": dict(fit=.25, cover=.10, nitrogen=.10, diversity=.10, water=.10, income=.35),
+}
+
+UNFAMILIAR_VALUE = 0.75     # income value kept for crops the field hasn't grown (market/equipment unknown)
+ERODIBLE_SLOPE_PCT = 4       # SSURGO slope at/above this ...
+ERODIBLE_K = 0.37            # ... or erodibility K at/above this -> soil cover matters more
+
+
+def resolve_priorities(priorities=None, site: dict | None = None) -> dict:
+    """Preset name or {card item: weight} -> weights that add up to 1.
+    On steep or easily eroded soil, soil cover gets a little extra weight."""
+    if priorities is None:
+        priorities = "balanced"
+    if isinstance(priorities, str):
+        if priorities not in PRIORITY_PRESETS:
+            raise ValueError(f"priorities must be one of {sorted(PRIORITY_PRESETS)} or a dict, "
+                             f"got {priorities!r}")
+        weights = dict(PRIORITY_PRESETS[priorities])
+    else:
+        unknown = set(priorities) - set(CARD)
+        if unknown:
+            raise ValueError(f"unknown priority keys {sorted(unknown)}; use {sorted(CARD)}")
+        weights = {**PRIORITY_PRESETS["balanced"], **{k: float(v) for k, v in priorities.items()}}
+    if site and ((site.get("slope_pct") or 0) >= ERODIBLE_SLOPE_PCT
+                 or (site.get("erodibility_k") or 0) >= ERODIBLE_K):
+        weights["cover"] += 0.05
+    total = sum(weights.values())
+    if total <= 0:
+        raise ValueError("priority weights must add up to more than 0")
+    return {k: v / total for k, v in weights.items()}
+
+
+def harvests_per_year(clim: Climate) -> int:
+    """1 harvest crop a year where the warm season is short; 2 (double cropping) where
+    at least 8 months average 10 degC or more."""
+    return 2 if sum(t >= 10 for t in clim.tmean) >= 8 else 1
+
+
+def crop_value(crop: Crop, familiar: set | None) -> float:
+    """Indicative value; discounted if the field has no history with the crop."""
+    if not familiar or crop.sci in familiar:
+        return crop.value
+    return crop.value * UNFAMILIAR_VALUE
+
+
+def water_score(crop: Crop, available_rain: float) -> float:
+    """1 = needs much less rain than falls, 0 = needs more than falls (EcoCrop optimum minimum)."""
+    need = crop.ropmn if crop.ropmn is not None else crop.rmin
+    if need is None or available_rain <= 0:
+        return 0.5
+    return max(0.0, min(1.0, 1.3 - need / available_rain))
+
+
+def expected_rain(clim: Climate, insights: dict | None = None) -> float:
+    """Average yearly rain; if it has been falling, allow for half a decade more of that
+    trend (but never less than 80% of the average - short records are noisy)."""
+    rain = clim.annual_rain
+    trend = (insights or {}).get("rain_trend_mm_per_decade") or 0.0
+    return max(0.8 * rain, rain + min(0.0, trend) / 2)
+
+
+def _legume_n(slot: Slot) -> float:
+    """Nitrogen credit: grain legumes export most of their N in the harvest, so count half."""
+    if not slot.crop.legume:
+        return 0.0
+    return 0.5 if slot.use == "harvest" and "forage" not in slot.crop.roles else 1.0
+
+
+# --------------------------------------------------------------------------------------
+# Rotation
+# --------------------------------------------------------------------------------------
+@dataclass
+class Rotation:
+    placed: tuple                  # ((absolute start month, Slot), ...); month 0 = Jan of year 1
+    years: int
+    card: dict = field(default_factory=dict)
+    overall: float = 0.0
+    is_baseline: bool = False
+    strategy: str = ""             # why it was picked, e.g. "best for your priority"
+    explanation: dict = field(default_factory=dict)
+
+    @property
+    def horizon(self) -> int:
+        return self.years * 12
+
+    @property
+    def slots(self) -> list[Slot]:
+        return [s for _, s in self.placed]
+
+    @property
+    def harvests(self) -> list[Slot]:
+        return [s for s in self.slots if s.use == "harvest"]
+
+    @property
+    def covers(self) -> list[Slot]:
+        return [s for s in self.slots if s.use == "cover"]
+
+    def covered_months(self) -> set[int]:
+        out = set()
+        for a, s in self.placed:
+            out.update((a + i) % self.horizon for i in range(s.months))
+        return out
+
+    def bare_months(self) -> list[int]:
+        """Months (0..horizon-1) with nothing growing."""
+        covered = self.covered_months()
+        return [m for m in range(self.horizon) if m not in covered]
+
+    @property
+    def name(self) -> str:
+        parts = [s.crop.name + (" (cover)" if s.use == "cover" else "") for s in self.slots]
+        return " -> ".join(parts)
+
+    def canonical(self) -> tuple:
+        seq = [(s.crop.sci, s.use, a % 12, s.months) for a, s in self.placed]
+        return min(tuple(seq[i:] + seq[:i]) for i in range(len(seq)))
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "years": self.years,
+            "is_current_rotation": self.is_baseline,
+            "strategy": self.strategy,
+            "overall": round(self.overall, 3),
+            "card": {k: round(v, 3) for k, v in self.card.items()},
+            "steps": [{
+                "year": a // 12 % self.years + 1,
+                "crop": s.crop.name, "scientific_name": s.crop.sci, "use": s.use,
+                "plant": MONTHS[a % 12], "end": MONTHS[(a + s.months - 1) % 12],
+                "months": s.months, "suitability": s.score, "limited_by": s.limiter,
+                "legume": s.crop.legume, "family": s.crop.family,
+                "evidence": list(s.evidence), "risks": list(s.flags),
+            } for a, s in self.placed],
+            "bare_months": len(self.bare_months()),
+            "explanation": self.explanation,
+        }
+
+
+def score_card(rot: Rotation, clim: Climate, insights: dict | None = None,
+               familiar: set | None = None) -> dict:
+    """0-1 scores on each CARD item."""
+    insights = insights or {}
+    slots, harvests = rot.slots, rot.harvests
+    weights = [s.months * (1.0 if s.use == "harvest" else 0.5) for s in slots]
+    fit = sum(s.score * w for s, w in zip(slots, weights)) / sum(weights) if slots else 0.0
+    cover = len(rot.covered_months()) / rot.horizon
+    nitrogen = min(1.0, sum(_legume_n(s) for s in slots) / (rot.years * 0.5))
+    diversity = min(1.0, (len({s.crop.family for s in slots}) - 1) / 3)
+    rain = expected_rain(clim, insights)
+    water = sum(water_score(s.crop, rain) for s in harvests) / len(harvests) if harvests else 0.0
+    income = min(1.0, sum(crop_value(s.crop, familiar) * s.score for s in harvests) / rot.years)
+    return {"fit": fit, "cover": cover, "nitrogen": nitrogen, "diversity": diversity,
+            "water": water, "income": income}
+
+
+def rate(rot: Rotation, clim: Climate, weights: dict, insights: dict | None = None,
+         familiar: set | None = None) -> Rotation:
+    rot.card = score_card(rot, clim, insights, familiar)
+    rot.overall = sum(weights[k] * rot.card[k] for k in CARD)
+    return rot
+
+
+# --------------------------------------------------------------------------------------
+# Search
+# --------------------------------------------------------------------------------------
+@dataclass
+class _State:
+    placed: tuple
+    end: int          # next free month
+    score: float      # running heuristic (approximate report card)
+    s0: int           # calendar month of the first crop
+
+
+def _last_harvest(placed) -> Slot | None:
+    for _, s in reversed(placed):
+        if s.use == "harvest":
+            return s
+    return None
+
+
+def _gain(st: _State, slot: Slot, horizon: int, years: int, weights: dict, rain: float,
+          max_harvests: int = 99, familiar: set | None = None) -> float | None:
+    """Approximate report-card increase from appending `slot`, or None if it breaks a rule."""
+    last = st.placed[-1][1]
+    prev_harvest = _last_harvest(st.placed)
+    c = slot.crop
+    if slot.use == "harvest":
+        if prev_harvest is not None and prev_harvest.crop.family == c.family:
+            return None                                 # same family twice in a row
+        if last.use == "cover" and last.crop.family == c.family:
+            return None                                 # e.g. rye cover then corn
+    else:
+        if last.use == "cover" or last.crop.sci == c.sci:
+            return None
+    n_same = sum(1 for _, s in st.placed if s.crop.sci == c.sci)
+    if slot.use == "harvest" and sum(1 for _, s in st.placed if s.use == "harvest") >= max_harvests:
+        return None
+
+    g = weights["fit"] * slot.score * slot.months / horizon
+    g += weights["cover"] * slot.months / horizon
+    g += weights["nitrogen"] * _legume_n(slot) / (years * 0.5) * 0.7
+    if slot.use == "harvest":
+        g += weights["income"] * crop_value(c, familiar) * slot.score / years
+        g += weights["water"] * water_score(c, rain) / years
+    g -= 0.05 * n_same                                  # same crop again (harvest or cover)
+    if c.family not in {s.crop.family for _, s in st.placed}:
+        g += weights["diversity"] / 3
+    return g
+
+
+def _close(st: _State, horizon: int, years: int, max_idle: int) -> bool:
+    """Can this plan repeat (its last crop leads back into its first)?"""
+    wrap_gap = st.s0 + horizon - st.end
+    if wrap_gap < 0:
+        return False
+    first, last = st.placed[0][1], st.placed[-1][1]
+    harvests = [s for _, s in st.placed if s.use == "harvest"]
+    if len(harvests) < years:
+        return False
+    if harvests[-1].crop.family == first.crop.family:
+        return False
+    if last.use == "cover":
+        return wrap_gap <= 2 and last.crop.family != first.crop.family
+    return wrap_gap <= max_idle
+
+
+def _prune(states: list[_State], beam: int, per_sequence: int = 3) -> list[_State]:
+    """Keep the best `beam` plans for each starting month (plans that started earlier have
+    had longer to collect points, so they are only compared with each other), and at most
+    `per_sequence` with the same harvest crops in the same order, so cover-crop variations
+    don't crowd out different crop line-ups."""
+    kept, per_start, seen = [], defaultdict(int), defaultdict(int)
+    for st in sorted(states, key=lambda s: -s.score):
+        key = (st.s0, tuple(s.crop.sci for _, s in st.placed if s.use == "harvest"))
+        if seen[key] < per_sequence and per_start[st.s0] < beam:
+            kept.append(st)
+            seen[key] += 1
+            per_start[st.s0] += 1
+    return kept
+
+
+def search_rotations(by_start: dict[int, list[Slot]], clim: Climate, weights: dict, years: int = 3,
+                     insights: dict | None = None, familiar: set | None = None,
+                     max_idle: int = 11, beam: int = 60) -> list[Rotation]:
+    """All distinct complete rotations found, rated and sorted best first.
+
+    familiar  scientific names the field already grows (known markets and equipment)
+    """
+    horizon = years * 12
+    rain = expected_rain(clim, insights)
+    max_harvests = years * harvests_per_year(clim)
+    levels: dict[int, list[_State]] = defaultdict(list)
+    for s0 in range(12):
+        for slot in by_start.get(s0, []):
+            if slot.use == "harvest" and slot.months <= horizon:
+                g = _gain(_State(((s0, slot),), 0, 0.0, s0), slot, horizon, years, weights, rain,
+                          max_harvests, familiar)
+                levels[s0 + slot.months].append(_State(((s0, slot),), s0 + slot.months, g or 0.0, s0))
+
+    finals: dict[tuple, Rotation] = {}
+    for t in range(0, 12 + horizon + 1):
+        states = _prune(levels.pop(t, []), beam)
+        for st in states:
+            if _close(st, horizon, years, max_idle):
+                rot = Rotation(st.placed, years)
+                key = rot.canonical()
+                if key not in finals:
+                    finals[key] = rot
+            last = st.placed[-1][1]
+            if last.use == "harvest":
+                options = [("harvest", g) for g in range(max_idle + 1)] + [("cover", 0), ("cover", 1)]
+            else:
+                options = [("harvest", g) for g in range(3)]
+            for use, gap in options:
+                start = t + gap
+                if start >= st.s0 + horizon:
+                    continue
+                for slot in by_start.get(start % 12, []):
+                    if slot.use != use:
+                        continue
+                    end = start + slot.months
+                    if end > st.s0 + horizon:
+                        continue
+                    g = _gain(st, slot, horizon, years, weights, rain, max_harvests, familiar)
+                    if g is None:
+                        continue
+                    levels[end].append(_State(st.placed + ((start, slot),), end, st.score + g, st.s0))
+
+    rated = [rate(r, clim, weights, insights, familiar) for r in finals.values()]
+    return sorted(rated, key=lambda r: -r.overall)
+
+
+def _overlap(a: Rotation, b: Rotation) -> float:
+    """Share of crops (and their use) two rotations have in common, 0-1."""
+    ka = {(s.crop.sci, s.use) for s in a.slots}
+    kb = {(s.crop.sci, s.use) for s in b.slots}
+    return len(ka & kb) / len(ka | kb)
+
+
+def pick_top(rotations: list[Rotation], n: int = 3, familiar: set | None = None,
+             max_overlap: float = 0.5) -> list[Rotation]:
+    """Pick `n` clearly different strategies from rotations sorted best first:
+      1. the best rotation for the farmer's priorities
+      2. the best one built mostly on crops the field already grows (if history is known)
+      3+ the next best that differ from those already picked
+    """
+    chosen: list[Rotation] = []
+
+    def distinct(r):
+        return all(_overlap(r, c) <= max_overlap for c in chosen)
+
+    def take(r, strategy):
+        r.strategy = strategy
+        chosen.append(r)
+
+    if rotations:
+        take(rotations[0], "best match for your priorities")
+    if familiar and len(chosen) < n:
+        close_to_current = [r for r in rotations[1:]
+                            if len({s.crop.sci for s in r.harvests} - familiar) <= 1]
+        pick = next((r for r in close_to_current if distinct(r)), None) or next(
+            (r for r in close_to_current if all(_overlap(r, c) < 1 for c in chosen)), None)
+        if pick is not None:
+            take(pick, "builds on the crops you already grow")
+    for r in rotations:
+        if len(chosen) >= n:
+            break
+        if r not in chosen and distinct(r):
+            take(r, "a different direction worth comparing")
+    return chosen
+
+
+# --------------------------------------------------------------------------------------
+# The current rotation, scored the same way
+# --------------------------------------------------------------------------------------
+def baseline_rotation(crops: list[Crop], clim: Climate, weights: dict, site: dict | None = None,
+                      irrigated: bool = False, insights: dict | None = None,
+                      familiar: set | None = None) -> Rotation | None:
+    """One crop per year, each planted in its best month; no cover crops (as CropScape shows)."""
+    placed, prev_end = [], 0
+    for year, crop in enumerate(crops):
+        options = [s for m in range(12) if (s := score_harvest(crop, m, clim, site, irrigated))]
+        if not options:
+            continue
+        slot = max(options, key=lambda s: (s.score, -s.start))
+        start = max(12 * year + slot.start, prev_end)
+        placed.append((start, slot))
+        prev_end = start + slot.months
+    if not placed:
+        return None
+    rot = Rotation(tuple(placed), max(1, len(crops)), is_baseline=True)
+    return rate(rot, clim, weights, insights, familiar)
+
+
+def calendar_grid(rot: Rotation) -> str:
+    """Year-by-month grid of what is in the ground. CAPITALS = harvest crop,
+    lower case = cover crop, '.' = bare soil."""
+    codes: dict[str, str] = {}
+    cells = [" . "] * rot.horizon
+    for a, s in rot.placed:
+        code = codes.setdefault(s.crop.sci, s.crop.name.replace(" ", "")[:3])
+        code = code.upper() if s.use == "harvest" else code.lower()
+        for i in range(s.months):
+            cells[(a + i) % rot.horizon] = f"{code:^3}"
+    lines = ["      " + " ".join(f"{m:^3}" for m in MONTHS)]
+    for y in range(rot.years):
+        lines.append(f"  Y{y + 1}  " + " ".join(cells[12 * y:12 * y + 12]))
+    names = {}
+    for s in rot.slots:
+        names.setdefault(codes[s.crop.sci].upper(), s.crop.name)
+    return "\n".join(lines) + "\n  " + ", ".join(f"{k} = {v}" for k, v in names.items())

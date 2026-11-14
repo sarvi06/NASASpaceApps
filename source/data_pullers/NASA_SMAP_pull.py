@@ -1,7 +1,20 @@
 """NASA SMAP: daily soil-moisture time series for a single point.
 
-Same shape as power.py (lat, lon, start, end -> DataFrame indexed by date), so the two
-can be merged with merge_with_power() below.
+Call:    get_soil_moisture(lat, lon, start_date, end_date, product="SPL4SMGP", refresh=False)
+Inputs:  lat, lon      decimal degrees (worldwide)
+         start_date    first day, "YYYY-MM-DD" (SMAP starts 2015-03-31; earlier dates are
+                       moved up to that day)
+         end_date      last day, "YYYY-MM-DD"
+         product       "SPL4SMGP" (default: gap-free model + satellite, incl. root zone)
+                       or "SPL3SMP_E" (raw satellite retrievals, surface only, with gaps)
+         refresh       True to download again instead of using the saved copy
+Output:  DataFrame, one row per day (index "date"), columns = PARAMETERS below
+         (only those of the chosen product). df.attrs["product"] = version used.
+Saved:   databases/<lat>_<lon>/NASA_SMAP_<product>_<start>_<end>.csv
+Needs:   EARTHDATA_USERNAME / EARTHDATA_PASSWORD environment variables (see below).
+
+Same shape as NASA_POWER_pull.get_climate (date-indexed), so the two can be merged with
+merge_with_power() below.
 
 How it works: SMAP's global files are far too big to download for a multi-year pull
 (SPL4SMGP is 8 granules/day), so the point is extracted server-side by NASA's AppEEARS
@@ -25,7 +38,7 @@ import warnings
 import pandas as pd
 import requests
 
-from .config import TIMEOUT
+from ._common import TIMEOUT, cached_csv, check_date_range, check_location, location_dir
 
 URL = "https://appeears.earthdatacloud.nasa.gov/api"
 
@@ -48,7 +61,7 @@ PRODUCT_LAYERS = {
     },
 }
 
-# Column name -> plain-English meaning (units). Same idea as power.PARAMETERS.
+# Column name -> plain-English meaning (units). Same idea as NASA_POWER_pull.PARAMETERS.
 PARAMETERS = {
     "SM_SURFACE": "surface soil moisture, 0-5 cm (m^3/m^3)",
     "SM_ROOTZONE": "root-zone soil moisture, 0-100 cm (m^3/m^3)  -> drought stress",
@@ -59,6 +72,8 @@ PARAMETERS = {
     "SM_PM": "L3 observed surface soil moisture, 6 pm pass (m^3/m^3)",
 }
 KELVIN_COLUMNS = {"SOIL_TEMP_LAYER1"}
+
+SMAP_START = pd.Timestamp("2015-03-31").date()  # first day of SMAP science data
 
 FILL_VALUE = -9999.0  # SMAP's marker for "no data" (anything below -999 is treated as such)
 
@@ -163,12 +178,29 @@ def _find_column(df: pd.DataFrame, product_version: str, layer: str) -> str:
     return match
 
 
+def get_soil_moisture(lat: float, lon: float, start_date, end_date,
+                      product: str = "SPL4SMGP", refresh: bool = False) -> pd.DataFrame:
+    """Daily SMAP soil moisture between start_date and end_date (inclusive)."""
+    lat, lon = check_location(lat, lon)
+    start, end = check_date_range(start_date, end_date, pd.Timestamp("1900-01-01").date(),
+                                  "NASA SMAP")
+    if end < SMAP_START:
+        raise ValueError(f"SMAP data starts on {SMAP_START}; end_date {end} is too early.")
+    start = max(start, SMAP_START)
+    if product not in PRODUCT_LAYERS:
+        raise ValueError(f"product must be one of {sorted(PRODUCT_LAYERS)}")
+    path = location_dir(lat, lon) / f"NASA_SMAP_{product}_{start:%Y%m%d}_{end:%Y%m%d}.csv"
+    return cached_csv(path, lambda: fetch_smap_daily(lat, lon, f"{start:%Y%m%d}",
+                                                     f"{end:%Y%m%d}", product=product),
+                      refresh=refresh, index=True)
+
+
 def fetch_smap_daily(lat: float, lon: float, start: str, end: str,
                      product: str = "SPL4SMGP", poll_seconds: float = 20,
                      max_wait_seconds: float = 3600) -> pd.DataFrame:
-    """Return one row per day between start and end (YYYYMMDD, inclusive).
+    """Download (no saving) one row per day between start and end (YYYYMMDD, inclusive).
 
-    Same call shape as power.fetch_power_daily. Sub-daily values (L4 is 3-hourly) are
+    Same call shape as NASA_POWER_pull.fetch_power_daily. Sub-daily values (L4 is 3-hourly) are
     averaged per UTC day; days with no data are NaN. The product version actually used
     (e.g. "SPL4SMGP.008") is kept in df.attrs["product"].
     """

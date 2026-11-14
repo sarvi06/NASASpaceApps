@@ -1,4 +1,4 @@
-"""Tests for the SMAP puller.
+"""Tests for data_pullers/NASA_SMAP_pull.py.
 
 Most tests run offline against a fake AppEEARS service. The final test hits the real
 service and only runs if EARTHDATA_USERNAME / EARTHDATA_PASSWORD are set.
@@ -11,8 +11,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from data_pull import smap
-from data_pull.config import TEST_FIELD
+from data_pullers import NASA_SMAP_pull as smap
+from data_pullers import TEST_FIELD
 
 
 class FakeResponse:
@@ -148,6 +148,31 @@ def test_merge_with_power_keeps_every_power_day():
     assert merged.attrs["elevation_m"] == 300 and merged.attrs["smap_product"] == "SPL4SMGP.008"
 
 
+def test_get_soil_moisture_moves_start_to_smap_launch_and_saves(tmp_data_dir, monkeypatch):
+    calls = []
+
+    def fake_fetch(lat, lon, start, end, product="SPL4SMGP"):
+        calls.append((start, end, product))
+        days = pd.date_range(pd.to_datetime(start), pd.to_datetime(end), name="date")
+        df = pd.DataFrame({"SM_ROOTZONE": 0.3}, index=days)
+        df.attrs["product"] = "SPL4SMGP.008"
+        return df
+
+    monkeypatch.setattr(smap, "fetch_smap_daily", fake_fetch)
+    a = smap.get_soil_moisture(42.065, -93.73, "2015-01-01", "2015-04-30")
+    b = smap.get_soil_moisture(42.065, -93.73, "2015-01-01", "2015-04-30")
+    assert calls == [("20150331", "20150430", "SPL4SMGP")]   # start moved to 2015-03-31, one download
+    assert b.attrs["product"] == "SPL4SMGP.008" and len(a) == len(b) == 31
+
+
+def test_get_soil_moisture_rejects_dates_before_smap(tmp_data_dir):
+    with pytest.raises(ValueError, match="SMAP data starts"):
+        smap.get_soil_moisture(42.065, -93.73, "2010-01-01", "2014-12-31")
+    with pytest.raises(ValueError, match="product"):
+        smap.get_soil_moisture(42.065, -93.73, "2020-01-01", "2020-12-31", product="XYZ")
+
+
+@pytest.mark.live
 @pytest.mark.skipif(not (os.environ.get("EARTHDATA_USERNAME") and os.environ.get("EARTHDATA_PASSWORD")),
                     reason="needs Earthdata Login credentials")
 def test_live_smap_returns_plausible_soil_moisture():
