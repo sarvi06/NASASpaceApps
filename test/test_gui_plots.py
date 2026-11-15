@@ -4,7 +4,8 @@ import json
 
 import pytest
 
-from gui.plots import DEFAULT_PLOTS, MAX_PLOTS, Plot, PlotStore, parse_crops, parse_size
+from gui.plots import (DEFAULT_PLOTS, MAX_PLOTS, Plot, PlotStore, last_grown_text, parse_crops,
+                       acres_text, parse_acres, parse_size, size_text, where_text)
 
 
 @pytest.fixture
@@ -94,7 +95,23 @@ def test_unreadable_save_file_starts_fresh(tmp_path):
     assert len(PlotStore(path=path).plots) == DEFAULT_PLOTS
 
 
+def test_plots_are_described_in_plain_words():
+    plot = Plot("Home field", 12.0, 42.065, -93.73, ("corn", "soybean"))
+    assert size_text(plot) == "29.65 acres (12 ha)"
+    assert where_text(plot) == "latitude 42.065, longitude -93.73"
+    assert last_grown_text(plot) == "last grew corn, then soybean"
+    named = Plot("Town field", 3.0, 42.0379, -93.6003, zip_code="50010", place="Ames, Iowa (zip 50010)")
+    assert where_text(named) == "near Ames, Iowa (zip 50010)"
+    new = Plot("Plot 2")
+    assert where_text(new) == "location not set yet" and last_grown_text(new) == "last rotation not entered"
+
+
 def test_parsers():
     assert parse_size(" 2.5 ") == 2.5
+    assert parse_acres(" 24.71 ") == pytest.approx(10.0)         # typed in acres, kept in hectares
+    for typed, message in (("big", "number of acres"), ("0", "more than 0 acres"), ("-3", "more than 0 acres")):
+        with pytest.raises(ValueError, match=message):
+            parse_acres(typed)
+    assert acres_text(1.0) == "2.47" and acres_text(12.0) == "29.65" and acres_text(4.0469) == "10"
     assert parse_crops("corn, soybean") == ("corn", "soybean") == parse_crops(["corn", " soybean"])
     assert parse_crops("") == () == parse_crops(None)

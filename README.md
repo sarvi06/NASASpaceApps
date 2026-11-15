@@ -35,32 +35,48 @@ Priorities: `balanced` (default), `save_water`, `build_soil`, `extra_income`.
 .venv\Scripts\python.exe source\user_interface.py
 ```
 
-- **Home page:** the plots are side bars on the left, 5 to start with. "Add plot" asks for a name
-  and a size and stops at 10. Plots are saved in `source/databases/gui/plots.json`.
-- **Click a plot** to open it. Set its size (hectares) and last rotation at the top. For its
-  location, type the zip code and press **Find location**: the latitude and longitude of the
-  centre of that zip area are filled in. That point is often a town or woodland, and soil and
-  crop history are looked up at one exact point, so change the two numbers to the field's own
-  position if you know it. Press Save, then use the tabs:
-  - **Budget** - what you can spend on growing costs a year for the whole plot; needs the cost per
-    hectare of at least one crop you know.
-  - **Crop planting** - one or two crops you want to grow; rotations are built around them.
-  - **Rotation** - the best rotations for the plot, following its last crop if it is filled in.
-- Every tab has the same settings row, an optional "Your numbers" table (your own price, yield and
-  cost per crop) and a results box. Runs happen in the background, so the window stays usable.
+- **Home page:** what the tool does in three steps, then a card for every plot showing its size,
+  where it is and what it last grew, with **Open** (or **Set up** if it has no location yet). The
+  same plots are in the side bar on the left, 5 to start with; "Add plot" stops at 10. Plots are
+  saved in `source/databases/gui/plots.json`.
+- **A plot:** its name and a one-line summary at the top. "Edit plot details" opens the form (it
+  is already open for a plot with no location). For the location, type the zip code and press
+  **Find location**: the latitude and longitude of the centre of that zip area are filled in.
+  That point is often a town or woodland, and soil and crop history are looked up at one exact
+  point, so change the two numbers to the field's own position if you know it. Press Save.
+- **Three questions, one tab each:**
+  - **Best rotations** - the best rotations for the plot, following its last crop if it is filled in.
+  - **Keep certain crops** - one or two crops you want to grow; rotations are built around them.
+  - **Stay within a budget** - what you can spend on growing costs a year for the whole plot;
+    needs the cost per hectare of at least one crop you know.
+- **Asking:** each tab asks its own question and "What matters most to you?" (a balance, saving
+  water, building soil health, earning more). Your own prices, yields and costs, and the weather
+  years, rotation length and irrigation, are folded away underneath. Press **Find rotations**;
+  it runs in the background, so the window stays usable.
+- **The answer** replaces the question on the same tab:
+  - the field in a few numbers (rain, frost-free days, very hot days, soil, what it grows now)
+  - things to know first
+  - the options side by side: crops, score out of 100, income per acre, months the soil is covered
+  - one card per option: a month-by-month calendar (harvest crops, cover crops, bare soil), each
+    score as a bar with a line marking what you grow now, the money, what you gain, and what to
+    check before planting. What the tool does not know and the numbers behind each crop are
+    folded away.
+  "Change what you asked" goes back; "Open the full written report" shows the same result as text.
 
 **Adding a tab:** write a small `BaseTab` subclass in `source/gui/tabs/` (`rotation.py` is the
 smallest example) and add it to `TABS` in `source/gui/tabs/__init__.py`.
 
 | File | What it does |
 |---|---|
-| `source/user_interface.py` | Home page: window, side bar, and the open plot |
-| `source/gui/theme.py` | Colours, fonts and cursor |
-| `source/gui/plots.py` | The plots and saving them (no tkinter) |
-| `source/gui/home.py` | Side bar of plot buttons, "Add plot" |
-| `source/gui/plot_view.py` | One plot: its details and its tabs |
+| `source/user_interface.py` | The window: side bar, and the home page or the open plot |
+| `source/gui/theme.py` | Colours and fonts, each colour with one meaning |
+| `source/gui/widgets.py` | Shared pieces: scrolling area, card, wrapping text, buttons, typing box, fold-out section |
+| `source/gui/plots.py` | The plots, saving them, and describing them in words (no tkinter) |
+| `source/gui/home.py` | Side bar of plot buttons, "Add plot", and the home page |
+| `source/gui/plot_view.py` | One plot: its summary, its details form and its tabs |
+| `source/gui/results.py` | The answer as cards, built from `Recommendation.to_dict()` |
 | `source/gui/runner.py` | Runs a back-end call in the background |
-| `source/gui/tabs/` | `base.py` (what every tab shares), `budget.py`, `crops.py`, `rotation.py` |
+| `source/gui/tabs/` | `base.py` (what every tab shares), `rotation.py`, `crops.py`, `budget.py` |
 
 ## For the front end: three questions, three functions
 

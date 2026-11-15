@@ -19,6 +19,8 @@ from pathlib import Path
 from data_pullers._common import DATA_DIR, check_location
 from data_pullers.US_ZipCode_pull import check_zip
 
+from .units import acres_to_ha, ha_to_acres
+
 DEFAULT_PLOTS = 5
 MAX_PLOTS = 10
 DEFAULT_SIZE_HA = 1.0
@@ -44,8 +46,44 @@ class Plot:
         return self.last_rotation[-1] if self.last_rotation else None
 
 
+def acres_text(size_ha: float) -> str:
+    """A stored size (hectares) as the acres the farmer sees: '30', '2.47' (at most 2 decimals)."""
+    return f"{round(ha_to_acres(size_ha), 2):g}"
+
+
+def size_text(plot: Plot) -> str:
+    """'30 acres (12 ha)'"""
+    return f"{acres_text(plot.size_ha)} acres ({plot.size_ha:g} ha)"
+
+
+def where_text(plot: Plot) -> str:
+    """'near Ames, Iowa (zip 50010)', the coordinates, or a prompt to set the location."""
+    if not plot.located:
+        return "location not set yet"
+    return f"near {plot.place}" if plot.place else f"latitude {plot.lat:g}, longitude {plot.lon:g}"
+
+
+def last_grown_text(plot: Plot) -> str:
+    """'last grew corn, then soybean', or a note that it is not filled in."""
+    if not plot.last_rotation:
+        return "last rotation not entered"
+    return "last grew " + ", then ".join(plot.last_rotation)
+
+
+def parse_acres(value) -> float:
+    """Plot size in hectares from the acres the farmer typed. Plots are stored in hectares (what
+    the back end takes), so this is the one place the typed size is converted."""
+    try:
+        acres = float(str(value).strip())
+    except ValueError:
+        raise ValueError(f"Plot size must be a number of acres, got {value!r}.") from None
+    if not 0 < acres < float("inf"):
+        raise ValueError(f"Plot size must be more than 0 acres, got {value!r}.")
+    return acres_to_ha(acres)
+
+
 def parse_size(value) -> float:
-    """Plot size in hectares from what the farmer typed."""
+    """Check a stored plot size in hectares (typed sizes go through parse_acres first)."""
     try:
         size = float(str(value).strip())
     except ValueError:

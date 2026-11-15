@@ -21,7 +21,7 @@ def crops_request(plot: Plot, crops_text: str, common: dict, numbers: dict | Non
 
 
 class CropPlantingTab(BaseTab):
-    title = "Crop planting"
+    title = "Keep certain crops"
     intro = ("Enter one or two crops you want to grow. Every rotation suggested will contain "
              "them, with the other crops chosen to suit them and the plot.")
 

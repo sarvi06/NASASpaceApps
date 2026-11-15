@@ -9,6 +9,6 @@ from .budget import BudgetTab
 from .crops import CropPlantingTab
 from .rotation import RotationTab
 
-TABS: list[type[BaseTab]] = [BudgetTab, CropPlantingTab, RotationTab]
+TABS: list[type[BaseTab]] = [RotationTab, CropPlantingTab, BudgetTab]
 
 __all__ = ["TABS", "BaseTab", "BudgetTab", "CropPlantingTab", "RotationTab"]

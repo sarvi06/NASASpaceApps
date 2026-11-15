@@ -44,9 +44,12 @@ def test_common_inputs_come_from_the_plot_and_the_settings_row():
 
 
 def test_farm_numbers_reads_the_table_and_skips_blanks():
-    rows = [("corn", "180", "", "900"), (" soybean ", "", "3.5", ""), ("", "", "", ""), ("oats", "", "", "")]
-    assert farm_numbers(rows) == {"corn": {"price": 180.0, "cost": 900.0}, "soybean": {"yield": 3.5}}
-    assert farm_numbers([("corn", "1,250", "", "")]) == {"corn": {"price": 1250.0}}
+    rows = [("corn", "4.5", "", "400"), (" soybean ", "", "50", ""), ("", "", "", ""), ("oats", "", "", "")]
+    numbers = farm_numbers(rows)
+    assert numbers["corn"] == pytest.approx({"price": 4.5 * 2204.62 / 56, "cost": 400 * 2.471})
+    assert numbers["soybean"] == pytest.approx({"yield": 50 * 60 / 2204.62 * 2.471})
+    assert list(numbers) == ["corn", "soybean"]
+    assert farm_numbers([("corn", "1,250", "", "")])["corn"]["price"] == pytest.approx(1250 * 2204.62 / 56)
     assert farm_numbers([("", "", "", "")] * 3) is None
     with pytest.raises(ValueError, match="no crop name"):
         farm_numbers([("", "180", "", "")])
@@ -93,7 +96,7 @@ def test_request_passes_progress_to_the_back_end():
 
 
 def test_tab_list_is_what_a_plot_shows():
-    assert TABS == [BudgetTab, CropPlantingTab, RotationTab]
+    assert TABS == [RotationTab, CropPlantingTab, BudgetTab]
     assert all(issubclass(tab, BaseTab) and tab.title and tab.intro for tab in TABS)
 
 
@@ -166,7 +169,9 @@ def test_window_opens_plots_shows_every_tab_and_checks_inputs(window, monkeypatc
     root, store = window
     sidebar = root.sidebar
     assert len(sidebar.buttons.winfo_children()) == DEFAULT_PLOTS
-    assert "Home field  (12 ha)" in sidebar.buttons.winfo_children()[0].cget("text")
+    assert sidebar.buttons.winfo_children()[0].cget("text") == " Home field\n 29.65 acres"
+    home = root.content.winfo_children()[0]                       # the home page: a card per plot
+    assert len(home.plots.winfo_children()) == DEFAULT_PLOTS
 
     for _ in range(MAX_PLOTS - DEFAULT_PLOTS):
         store.add(store.next_name(), 2)
@@ -176,8 +181,12 @@ def test_window_opens_plots_shows_every_tab_and_checks_inputs(window, monkeypatc
 
     root.open_plot(0)
     view = root.content.winfo_children()[0]
-    assert [view.notebook.tab(tab, "text") for tab in view.tabs] == ["Budget", "Crop planting", "Rotation"]
-    budget, crops, rotation = view.tabs
+    assert [view.notebook.tab(tab, "text") for tab in view.tabs] == [
+        "Best rotations", "Keep certain crops", "Stay within a budget"]
+    rotation, crops, budget = view.tabs
+    assert not view.details_open and "29.65 acres (12 ha)" in view.summary.cget("text")
+    view.toggle_details()
+    assert view.details_open
     assert [row[0].get() for row in budget.number_rows][:2] == ["corn", "soybean"]     # last rotation
 
     budget.run()                                                    # nothing typed yet
@@ -190,11 +199,12 @@ def test_window_opens_plots_shows_every_tab_and_checks_inputs(window, monkeypatc
     assert rotation.collect().call is backend.recommend_after_crop
 
     view.boxes["size_ha"].delete(0, "end")
-    view.boxes["size_ha"].insert(0, "20")
+    view.boxes["size_ha"].insert(0, "49.42")                      # typed in acres, stored in hectares
     view.save()
-    assert store.plots[0].size_ha == 20 and budget.collect().kwargs["plot_size_ha"] == 20
-    assert "20 ha" in budget.size_note.cget("text")
-    assert "(20 ha)" in sidebar.buttons.winfo_children()[0].cget("text")
+    assert store.plots[0].size_ha == pytest.approx(20) and budget.collect().kwargs["plot_size_ha"] == pytest.approx(20)
+    assert "49.42 acres" in budget.size_note.cget("text")
+    assert "49.42 acres" in sidebar.buttons.winfo_children()[0].cget("text")
+    assert "49.42 acres (20 ha)" in view.summary.cget("text")
     view.boxes["lat"].delete(0, "end")
     view.boxes["lat"].insert(0, "95")
     view.save()
@@ -226,6 +236,7 @@ def test_window_opens_plots_shows_every_tab_and_checks_inputs(window, monkeypatc
     class FakeRecommendation:
         rotations = [1, 2, 3]
         def to_text(self): return "THE REPORT"
+        def to_dict(self): return {"warnings": ["One thing to know"], "disclaimer": "Check locally."}
 
     monkeypatch.setattr(backend, "recommend_after_crop", lambda **kwargs: FakeRecommendation())
     rotation.run()
@@ -234,10 +245,18 @@ def test_window_opens_plots_shows_every_tab_and_checks_inputs(window, monkeypatc
         root.update()
         time.sleep(0.01)
     assert "3 option(s)" in rotation.status.cget("text")
-    assert rotation.results.get("1.0", "end").strip() == "THE REPORT"
+    assert rotation.page is rotation.answering                      # the results page takes over
+    assert len(rotation.results.body.winfo_children()) == 2         # the notes card and the footer
     assert str(rotation.run_button.cget("state")) == "normal"
+    rotation.show_page(rotation.asking)
+    assert rotation.page is rotation.asking
+
+    root.show_home()                                                # back to the home page
+    assert sidebar.selected.get() == -1 and hasattr(root.content.winfo_children()[0], "plots")
 
     root.open_plot(1)                                               # a plot with no location yet
-    empty = root.content.winfo_children()[0].tabs[2]
+    empty_view = root.content.winfo_children()[0]
+    assert empty_view.details_open                                  # nothing to do until it is located
+    empty = empty_view.tabs[0]
     empty.run()
     assert empty.status.cget("text") == NO_LOCATION

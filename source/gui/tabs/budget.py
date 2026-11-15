@@ -1,7 +1,7 @@
 """Budget tab: the best rotations whose growing costs fit what the farmer can spend a year.
 
 It starts from the plot's last rotation (the crops the farmer knows the costs of) and uses the
-plot's size to turn the budget into a limit per hectare. There is no cost dataset, so at least
+plot's size to turn the budget into a limit per acre. There is no cost dataset, so at least
 one crop's cost has to be entered in "Your numbers".
 """
 
@@ -11,7 +11,7 @@ import tkinter as tk
 
 import backend
 
-from ..plots import Plot
+from ..plots import Plot, acres_text
 from .base import BaseTab, Request
 
 
@@ -23,7 +23,7 @@ def budget_request(plot: Plot, budget_text: str, common: dict, numbers: dict | N
     if budget <= 0:
         raise ValueError("Your budget must be more than 0.")
     if not any("cost" in figures for figures in (numbers or {}).values()):
-        raise ValueError("Enter what at least one crop costs you per hectare in 'Your numbers': "
+        raise ValueError("Enter what at least one crop costs you per acre in 'Your numbers': "
                          "there is no cost data to plan a budget from otherwise.")
     return Request(backend.recommend_within_budget,
                    {**common, "budget_usd": budget, "plot_size_ha": plot.size_ha,
@@ -31,21 +31,23 @@ def budget_request(plot: Plot, budget_text: str, common: dict, numbers: dict | N
 
 
 class BudgetTab(BaseTab):
-    title = "Budget"
+    title = "Stay within a budget"
+    numbers_open = True       # a budget needs at least one cost, so the table starts open
+    numbers_title = "What your crops cost you (at least one cost is needed; prices and yields are optional)"
     intro = ("Enter what you can spend on growing costs a year for the whole plot. The rotations "
              "suggested follow your last rotation and cost no more than that. Fill in the cost "
-             "per hectare of at least one crop you know below; other crops are assumed to cost "
+             "per acre of at least one crop you know below; other crops are assumed to cost "
              "the same share of their income.")
 
     def build_inputs(self, frame: tk.Frame) -> None:
-        self.label(frame, "Budget (US dollars a year, whole plot)").pack(side="left", padx=(0, 6))
+        self.label(frame, "What you can spend a year on the whole plot (US dollars)").pack(side="left", padx=(0, 6))
         self.budget = self.entry(frame, "", 14)
         self.budget.pack(side="left")
         self.size_note = self.label(frame, self._size_text())
         self.size_note.pack(side="left", padx=12)
 
     def _size_text(self) -> str:
-        return f"Plot size: {self.plot.size_ha:g} ha"
+        return f"Plot size: {acres_text(self.plot.size_ha)} acres"
 
     def crops_to_prefill(self) -> list[str]:
         return list(dict.fromkeys(self.plot.last_rotation))     # each crop once, in order

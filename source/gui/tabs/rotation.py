@@ -17,7 +17,7 @@ def rotation_request(plot: Plot, common: dict, numbers: dict | None) -> Request:
 
 
 class RotationTab(BaseTab):
-    title = "Rotation"
+    title = "Best rotations"
     intro = ("The best three rotations for this plot's climate and soil. If the plot's last "
              "rotation is filled in, they are chosen and started to follow its last crop.")
 
