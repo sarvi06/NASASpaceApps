@@ -24,9 +24,9 @@ class Field:
     lon: float
 
 
-# Test field: a corn/soybean field in Story County, Iowa, ~7 km north-west of Ames.
-# CropScape shows a clean corn <-> soybean alternation here, so it is a good baseline.
-TEST_FIELD = Field(name="masakis family farm :)", lat=32.617, lon=130.629)
+# Default field for demo.py and the live tests: a point in central Kansas. It must be in the
+# contiguous United States, the area the tool covers.
+TEST_FIELD = Field(name="masakis family farm :)", lat= 38, lon=-98)
 
 # Where downloads are saved. Contents are gitignored and re-created automatically.
 DATA_DIR = Path(__file__).resolve().parents[1] / "databases"

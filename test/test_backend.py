@@ -15,8 +15,6 @@ CORN, SOY, OATS = "Zea mays ssp. mays", "Glycine max", "Avena sativa"
 @pytest.fixture
 def offline(monkeypatch):
     """Swap the web pullers for fixed data (EcoCrop still comes from the saved table)."""
-    monkeypatch.setattr(backend, "get_country",
-                        lambda lat, lon: {"name": "United States", "iso2": "US", "m49": 840})
     monkeypatch.setattr(backend, "get_crop_economics", lambda m49: fake_faostat())
     monkeypatch.setattr(backend, "get_climate",
                         lambda lat, lon, s, e: fake_power_daily(s.year, e.year))
@@ -47,13 +45,46 @@ def test_point_in_the_sea_or_on_ice_is_refused(offline, monkeypatch):
         return fake_power_daily(s.year, e.year).assign(GWETROOT=float("nan"))
     monkeypatch.setattr(backend, "get_climate", ocean)
     with pytest.raises(ValueError, match="in the sea or on ice.*latitude first"):
-        backend.recommend(-74, 39, "2015-01-01", "2024-12-31")
+        backend.recommend(30, -75, "2015-01-01", "2024-12-31")     # the Atlantic, off Florida
 
 
-def test_report_says_which_country_the_point_is_in(offline):
-    text = backend.recommend(*ARGS).to_text()
-    assert "Location: latitude 42.065, longitude -93.73, United States" in text
-    assert "Coldest" in text
+def test_report_says_where_the_point_is(offline):
+    rec = backend.recommend(*ARGS)
+    assert rec.country == {"name": "United States", "iso2": "US", "m49": 840}
+    assert "Location: latitude 42.065, longitude -93.73, United States" in rec.to_text()
+    assert "Coldest" in rec.to_text()
+    named = backend.recommend(*ARGS, place="Ames, Iowa (zip 50010)")
+    assert "Location: near Ames, Iowa (zip 50010), latitude 42.065" in named.to_text()
+    assert named.to_dict()["place"] == "Ames, Iowa (zip 50010)"
+
+
+@pytest.mark.parametrize("lat, lon", [(51.45, -2.58), (32.617, 130.629), (61.2, -149.9)])
+def test_only_the_contiguous_united_states_is_covered(offline, monkeypatch, lat, lon):
+    monkeypatch.setattr(backend, "get_climate", lambda *a: 1 / 0)        # refused before any download
+    with pytest.raises(ValueError, match="outside the contiguous United States.*zip code"):
+        backend.recommend(lat, lon, "2015-01-01", "2024-12-31")
+
+
+def test_point_with_no_us_soil_survey_is_refused(offline, monkeypatch):
+    monkeypatch.setattr(backend, "get_soil", lambda lat, lon: nicollet_soil().iloc[:0])
+    with pytest.raises(ValueError, match="soil survey has nothing"):
+        backend.recommend(49.5, -100.0, "2015-01-01", "2024-12-31")       # Manitoba, inside the box
+
+
+def test_soil_service_failure_is_a_warning_not_a_crash(offline, monkeypatch):
+    monkeypatch.setattr(backend, "get_soil", lambda lat, lon: 1 / 0)
+    rec = backend.recommend(*ARGS)
+    assert any("Soil data unavailable" in w for w in rec.warnings) and rec.field.site is None
+    assert len(rec.rotations) == 3
+
+
+def test_point_that_is_not_a_crop_field_says_so(offline, monkeypatch):
+    def town(lat, lon, a, b):
+        return corn_soy_history(a, b).assign(crop="Developed/Low Intensity")
+    monkeypatch.setattr(backend, "get_crop_history", town)
+    rec = backend.recommend(*ARGS)
+    assert any("'Developed/Low Intensity' at this exact point" in w for w in rec.warnings)
+    assert rec.baseline is None and rec.previous_crop is None
 
 
 def test_priorities_and_user_rotation(offline):
@@ -81,7 +112,8 @@ def test_previous_crop_decides_where_each_rotation_starts(offline):
 
 
 def test_previous_crop_falls_back_to_the_entered_rotation(offline, monkeypatch):
-    monkeypatch.setattr(backend, "in_contiguous_us", lambda lat, lon: False)
+    monkeypatch.setattr(backend, "get_crop_history",                       # no crop at the point
+                        lambda lat, lon, a, b: corn_soy_history(a, b).assign(crop=None))
     args = (42.065, -93.73, "2015-01-01", "2024-12-31")
     rec = backend.recommend(*args, current_rotation=["soybean", "corn"])
     assert rec.previous_crop["crop"] == "corn"
@@ -221,14 +253,6 @@ def test_faostat_failure_is_a_warning_not_a_crash(offline, monkeypatch):
     assert "none available" in rec.to_text()
 
 
-def test_country_can_be_given_instead_of_looked_up(offline, monkeypatch):
-    monkeypatch.setattr(backend, "get_country", lambda lat, lon: 1 / 0)       # must not be called
-    asked = []
-    monkeypatch.setattr(backend, "get_crop_economics", lambda m49: asked.append(m49) or fake_faostat())
-    rec = backend.recommend(*ARGS, country="Japan")
-    assert asked == [392] and rec.country["iso2"] == "JP"
-
-
 def test_smap_failure_is_a_warning_not_a_crash(offline):
     rec = backend.recommend(42.065, -93.73, "2018-01-01", "2024-12-31", use_smap=True)
     assert any("SMAP" in w for w in rec.warnings)
@@ -250,7 +274,6 @@ def test_short_period_warns(offline):
     (dict(must_grow=["corn", "oats", "wheat"]), "one or two"),
     (dict(farm_numbers={"bananas": {"price": 3}}), "Unknown crop"),
     (dict(farm_numbers={"corn": {"cost": -5}}), "0 or more"),
-    (dict(country="Atlantis"), "Unknown country"),
 ])
 def test_bad_inputs_give_clear_errors(offline, kwargs, message):
     args = dict(lat=42.065, lon=-93.73, start_date="2015-01-01", end_date="2024-12-31") | kwargs

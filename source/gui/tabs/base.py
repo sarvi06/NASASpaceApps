@@ -30,7 +30,8 @@ NUMBER_ROWS = 3
 INTRO_WIDTH = 760     # pixels the intro line wraps at (the tab is about 800 wide)
 NUMBER_COLUMNS = (("price", "Price (USD per tonne)"), ("yield", "Yield (tonnes per ha)"),
                   ("cost", "Cost (USD per ha)"))
-NO_LOCATION = "Set this plot's latitude and longitude first (plot details, above), then press Save."
+NO_LOCATION = ("Set this plot's location first (plot details, above): type its zip code and press "
+               "'Find location', or enter its latitude and longitude, then press Save.")
 
 
 @dataclass
@@ -63,6 +64,8 @@ def common_inputs(plot: Plot, start_date: str, end_date: str, priority: str, yea
               "irrigated": bool(irrigated)}
     if plot.last_rotation:
         inputs["current_rotation"] = list(plot.last_rotation)
+    if plot.place:
+        inputs["place"] = plot.place
     return inputs
 
 

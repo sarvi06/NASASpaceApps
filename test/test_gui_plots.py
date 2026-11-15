@@ -50,11 +50,20 @@ def test_update_takes_what_the_farmer_typed(store):
     assert not cleared.located and cleared.last_rotation == ()
 
 
+def test_zip_code_and_its_place_name_are_kept_with_the_plot(store):
+    plot = store.update(0, zip_code=" 50010-1234 ", place="Ames, Iowa (zip 50010)", lat=42.0379, lon=-93.6003)
+    assert plot.zip_code == "50010" and plot.place == "Ames, Iowa (zip 50010)" and plot.located
+    assert PlotStore(path=store.path).plots[0] == plot
+    no_zip = store.update(0, zip_code="")                       # a place name needs its zip code
+    assert no_zip.zip_code == "" and no_zip.place == "" and no_zip.located
+
+
 @pytest.mark.parametrize("changes, message", [
     (dict(lat="95", lon="10"), "Latitude must be between"),
     (dict(lat="42"), "both latitude and longitude"),
     (dict(lat="north", lon="10"), "must be numbers"),
     (dict(size_ha="lots"), "number of hectares"),
+    (dict(zip_code="BA2 7AY"), "five digits"),
     (dict(name="Plot 3"), "already a plot called"),
 ])
 def test_bad_details_change_nothing(store, changes, message):
@@ -65,11 +74,18 @@ def test_bad_details_change_nothing(store, changes, message):
 
 
 def test_plots_are_saved_and_come_back(store):
-    store.update(1, size_ha=7, lat=32.617, lon=130.629, last_rotation=["rice"])
+    store.update(1, size_ha=7, lat=34.75, lon=-91.5, last_rotation=["rice"])
     store.add("Hill field", 3)
     again = PlotStore(path=store.path)
     assert again.plots == store.plots and len(again.plots) == DEFAULT_PLOTS + 1
     assert json.loads(store.path.read_text())[1]["last_rotation"] == ["rice"]
+
+
+def test_plots_saved_before_zip_codes_still_load(tmp_path):
+    path = tmp_path / "plots.json"
+    path.write_text(json.dumps([{"name": "Old", "size_ha": 2.0, "lat": 42.0, "lon": -93.0,
+                                 "last_rotation": ["corn"]}]))
+    assert PlotStore(path=path).plots == [Plot("Old", 2.0, 42.0, -93.0, ("corn",))]
 
 
 def test_unreadable_save_file_starts_fresh(tmp_path):

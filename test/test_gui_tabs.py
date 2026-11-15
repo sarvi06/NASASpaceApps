@@ -33,6 +33,9 @@ def test_common_inputs_come_from_the_plot_and_the_settings_row():
     assert inputs == {**COMMON, "priorities": "build_soil", "rotation_years": 4, "irrigated": True,
                       "current_rotation": ["corn", "soybean"]}
     assert "current_rotation" not in common_inputs(BARE, "2015-01-01", "2024-12-31", "balanced", 3)
+    assert "place" not in inputs
+    named = Plot("Town field", 3.0, 42.0379, -93.6003, zip_code="50010", place="Ames, Iowa (zip 50010)")
+    assert common_inputs(named, "2015-01-01", "2024-12-31", "balanced", 3)["place"] == "Ames, Iowa (zip 50010)"
     with pytest.raises(ValueError, match="whole number of years"):
         common_inputs(IOWA, "2015-01-01", "2024-12-31", "balanced", "three")
     with pytest.raises(ValueError) as error:
@@ -196,6 +199,29 @@ def test_window_opens_plots_shows_every_tab_and_checks_inputs(window, monkeypatc
     view.boxes["lat"].insert(0, "95")
     view.save()
     assert "Latitude must be between" in view.message.cget("text") and store.plots[0].lat == 42.065
+
+    # zip code -> latitude and longitude, then Save keeps the place name with the plot
+    from gui import plot_view
+    found = {"zip": "50010", "place": "Ames", "state": "Iowa", "state_code": "IA",
+             "lat": 42.0379, "lon": -93.6003}
+    view.boxes["zip_code"].insert(0, "5001")
+    view.find_location()
+    assert "five digits" in view.message.cget("text") and not view.runner.busy
+    monkeypatch.setattr(plot_view, "get_zip_location", lambda code: found)
+    view.boxes["zip_code"].insert("end", "0")
+    view.find_location()
+    end = time.time() + 5
+    while view.runner.busy and time.time() < end:
+        root.update()
+        time.sleep(0.01)
+    assert view.boxes["lat"].get() == "42.0379" and view.boxes["lon"].get() == "-93.6003"
+    assert "Ames, Iowa (zip 50010)" in view.message.cget("text")
+    view.save()
+    assert store.plots[0].place == "Ames, Iowa (zip 50010)" and store.plots[0].lat == 42.0379
+    assert rotation.collect().kwargs["place"] == "Ames, Iowa (zip 50010)"
+    view.boxes["zip_code"].delete(0, "end")                         # zip removed: the name goes too
+    view.save()
+    assert store.plots[0].place == "" and store.plots[0].lat == 42.0379
 
     class FakeRecommendation:
         rotations = [1, 2, 3]

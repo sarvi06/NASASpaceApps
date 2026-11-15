@@ -19,8 +19,10 @@ What happens inside:
   1. check the inputs
   2. pull the data (data_pullers/; saved to disk the first time, reused after)
        NASA POWER climate  - required
-       USDA SSURGO soil, USDA CropScape crop history (US only), NASA SMAP (optional)
-       FAO EcoCrop crop needs; FAOSTAT prices and yields for the field's country
+       USDA SSURGO soil, USDA CropScape crop history, NASA SMAP (optional)
+       FAO EcoCrop crop needs; FAOSTAT prices and yields for the United States
+     The soil and crop-history data only exist for the USA, so the tool covers the
+     contiguous United States (the 48 states); other locations are refused.
   3. decision/field_profile.py  -> one FieldProfile (climate, soil, trends, current rotation)
   4. decision/crops.py          -> candidate crops (every rotation crop in EcoCrop)
      decision/economics.py      -> one Economy: what each crop earns here and how widely it
@@ -41,8 +43,8 @@ from typing import Callable
 
 import pandas as pd
 
-from data_pullers import (find_country, get_climate, get_country, get_crop_economics,
-                          get_crop_history, get_crop_requirements, get_soil, get_soil_moisture)
+from data_pullers import (find_country, get_climate, get_crop_economics, get_crop_history,
+                          get_crop_requirements, get_soil, get_soil_moisture)
 from data_pullers._common import check_location, to_date
 from data_pullers.USDA_CropScape_pull import FIRST_YEAR, in_contiguous_us, latest_year
 from decision import report
@@ -70,7 +72,8 @@ class Recommendation:
     priority_name: str
     previous_crop: dict | None = None       # {"crop", "scientific_name", "source"}: grown last
     must_grow: list[str] = field(default_factory=list)   # crops every rotation had to contain
-    country: dict | None = None             # {"name", "iso2", "m49"} used for prices and yields
+    country: dict | None = None             # {"name", "iso2", "m49"}: always the United States
+    place: str | None = None                # what the farmer calls the spot, e.g. "Ames, Iowa (zip 50010)"
     economy: Economy = field(default_factory=Economy)    # what each crop earns and how it sells
     crops: dict = field(default_factory=dict)            # every candidate, {scientific name: Crop}
     budget: dict | None = None              # {"budget_usd", "plot_size_ha", "max_cost_usd_ha"}
@@ -90,6 +93,7 @@ class Recommendation:
             "must_grow": self.must_grow,
             "budget": self.budget,
             "country": self.country,
+            "place": self.place,
             "economy": {"typical_income_usd_ha": self.economy.typical_income,
                         "assumed_cost_share": self.economy.cost_share},
             "economics": self.economy.table(self.crops),
@@ -112,11 +116,13 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
               on_progress: Callable[[str], None] | None = None,
               previous_crop: str | None = None, must_grow: list[str] | None = None,
               farm_numbers: dict | None = None,
-              country: str | None = None, budget_usd: float | None = None,
+              place: str | None = None, budget_usd: float | None = None,
               plot_size_ha: float | None = None) -> Recommendation:
-    """Top 3 crop rotations for a location, using data between start_date and end_date.
+    """Top 3 crop rotations for a location in the contiguous United States, using data
+    between start_date and end_date.
 
-    lat, lon          decimal degrees
+    lat, lon          decimal degrees, inside the 48 contiguous states (a zip code can be
+                      turned into them with data_pullers.get_zip_location)
     start_date, end_date   "YYYY-MM-DD"; at least 12 months apart (5+ years recommended)
     priorities        "balanced", "save_water", "build_soil", "extra_income", or a dict of
                       weights over fit/cover/nitrogen/diversity/sequence/water/income/market
@@ -135,8 +141,8 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
                       FAOSTAT's national average), cost = US dollars per hectare (FAOSTAT has
                       none; once any cost is given, crops without one are assumed to cost the
                       same share of their income, so profit is compared with profit)
-    country           country used for FAOSTAT prices and yields, e.g. "Japan" or "JP";
-                      default = looked up from lat/lon
+    place             optional name for the spot, shown in the report, e.g.
+                      "Ames, Iowa (zip 50010)"
     budget_usd, plot_size_ha   given together: the most the farmer can spend on growing
                       costs per year for a plot of that size. Rotations costing more per
                       hectare are left out. Needs at least one cost in farm_numbers.
@@ -147,6 +153,11 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
 
     # ---- 1. inputs ----
     lat, lon = check_location(lat, lon)
+    if not in_contiguous_us(lat, lon):
+        raise ValueError(f"Latitude {lat:g}, longitude {lon:g} is outside the contiguous United "
+                         f"States (the 48 states), the area this tool covers: its soil and "
+                         f"crop-history data are US only. Enter a US zip code, or a US latitude "
+                         f"(north +) and longitude (west -), e.g. 42.065, -93.73 for Iowa.")
     start, end = to_date(start_date, "start_date"), to_date(end_date, "end_date")
     if start > end:
         raise ValueError(f"start_date ({start}) is after end_date ({end}).")
@@ -163,7 +174,7 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
     must_grow = [must_grow] if isinstance(must_grow, str) else list(must_grow or [])
     if len(must_grow) > MAX_MUST_GROW:
         raise ValueError(f"must_grow takes one or two crop names, got {len(must_grow)}.")
-    place = find_country(country) if country else None
+    usa = find_country("US")
     budget = _check_budget(budget_usd, plot_size_ha, farm_numbers)
 
     # ---- 2. data ----
@@ -178,23 +189,23 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
     sources.append("NASA POWER daily climate (power.larc.nasa.gov)")
 
     say("Downloading USDA SSURGO soil...")
-    soil = pd.DataFrame()
+    soil = None
     try:
         soil = get_soil(lat, lon)
-        if soil.empty:
-            warnings.append("No USDA SSURGO soil data here (it covers the US only); "
-                            "soil needs were not checked.")
-        else:
-            sources.append("USDA NRCS SSURGO soil survey (Soil Data Access)")
     except Exception as exc:
         warnings.append(f"Soil data unavailable ({exc}); soil needs were not checked.")
+    if soil is not None and soil.empty:
+        raise ValueError(f"The USDA soil survey has nothing at latitude {lat:g}, longitude {lon:g}: "
+                         f"the point is outside the United States or on land that was never "
+                         f"surveyed. Move it onto your field.")
+    if soil is None:
+        soil = pd.DataFrame()
+    else:
+        sources.append("USDA NRCS SSURGO soil survey (Soil Data Access)")
 
     history = pd.DataFrame()
     first, last = max(start.year, FIRST_YEAR), min(end.year, latest_year())
-    if not in_contiguous_us(lat, lon):
-        warnings.append("Outside the contiguous US: no USDA CropScape crop history, so the current "
-                        "rotation must be entered by hand to compare against it.")
-    elif first > last:
+    if first > last:
         warnings.append(f"USDA CropScape covers {FIRST_YEAR}-{latest_year()}; your dates don't "
                         f"overlap it, so no crop history was used.")
     else:
@@ -205,6 +216,7 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
             if len(failed):
                 warnings.append(f"CropScape didn't answer for {', '.join(map(str, failed['year']))}.")
             sources.append("USDA NASS Cropland Data Layer via CropScape")
+            warnings += _not_a_crop_field(history)
         except Exception as exc:
             warnings.append(f"Crop history unavailable ({exc}).")
 
@@ -227,13 +239,12 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
     say("Loading FAOSTAT crop prices and yields...")
     faostat = pd.DataFrame()
     try:
-        place = place or get_country(lat, lon)
-        faostat = get_crop_economics(place["m49"])
-        sources.append(f"FAOSTAT producer prices and crop yields for {place['name']} (fao.org/faostat)")
+        faostat = get_crop_economics(usa["m49"])
+        sources.append(f"FAOSTAT producer prices and crop yields for {usa['name']} (fao.org/faostat)")
     except Exception as exc:
         warnings.append(f"FAOSTAT prices and yields unavailable ({exc}); only crops you gave "
                         f"both a price and a yield for are priced.")
-    economy = build_economy(faostat, crops, place["name"] if place else "", farm_numbers)
+    economy = build_economy(faostat, crops, usa["name"], farm_numbers)
     if not economy.crops:
         warnings.append("No crop has a known price here, so income and market did not affect "
                         "the ranking.")
@@ -303,13 +314,13 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
     return Recommendation(
         field=fp, rotations=top, baseline=baseline, best_crops=best_single_crops(by_start),
         weights=weights, priority_name=priority_name, previous_crop=previous,
-        must_grow=[crops[s].name for s in must], country=place,
+        must_grow=[crops[s].name for s in must], country=usa, place=place,
         economy=economy, crops=crops, budget=budget,
         warnings=warnings, data_sources=sources,
         inputs={"lat": lat, "lon": lon, "start_date": str(start), "end_date": str(end),
                 "priorities": priorities, "current_rotation": current_rotation,
                 "previous_crop": previous_crop, "must_grow": must_grow,
-                "farm_numbers": farm_numbers, "country": country,
+                "farm_numbers": farm_numbers, "place": place,
                 "budget_usd": budget_usd, "plot_size_ha": plot_size_ha,
                 "rotation_years": rotation_years, "irrigated": irrigated, "use_smap": use_smap},
     )
@@ -352,6 +363,17 @@ def recommend_within_budget(lat: float, lon: float, start_date, end_date, budget
         raise ValueError("A budget needs both budget_usd and plot_size_ha.")
     return recommend(lat, lon, start_date, end_date, budget_usd=budget_usd,
                      plot_size_ha=plot_size_ha, farm_numbers=farm_numbers, **options)
+
+
+def _not_a_crop_field(history: pd.DataFrame) -> list[str]:
+    """A warning when CropScape answered but shows no crop at the point (a town, pasture,
+    woodland...), which is what the centre of a zip code area often is."""
+    seen = history["crop"].dropna()
+    if seen.empty or seen.isin(CDL_TO_ECOCROP).any():
+        return []
+    return [f"USDA CropScape shows '{seen.mode().iloc[0]}' at this exact point, not a crop field, "
+            f"so the current rotation could not be detected and the soil may not be your "
+            f"field's. Move the latitude and longitude onto your field."]
 
 
 def _check_on_land(climate: pd.DataFrame, lat: float, lon: float) -> None:

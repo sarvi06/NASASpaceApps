@@ -220,9 +220,10 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
 # --------------------------------------------------------------------------------------
 # Full text report (used by demo.py)
 # --------------------------------------------------------------------------------------
-def _field_summary(field, country: dict | None = None) -> list[str]:
+def _field_summary(field, country: dict | None = None, place: str | None = None) -> list[str]:
     i = field.insights
-    lines = [f"Location: latitude {field.lat}, longitude {field.lon}"
+    lines = ["Location: " + (f"near {place}, " if place else "")
+             + f"latitude {field.lat}, longitude {field.lon}"
              + (f", {country['name']}" if country else "")
              + (f"  (elevation {field.elevation_m:.0f} m)" if field.elevation_m is not None else ""),
              f"Data period: {field.start_date} to {field.end_date} ({i.get('years_of_data')} years)", ""]
@@ -254,13 +255,14 @@ def _field_summary(field, country: dict | None = None) -> list[str]:
                      f"pH {s['ph']}, {s['text_raw']} texture, {s['dra_raw']}, organic matter "
                      f"{s['fer_raw_om_pct']}%, slope {s.get('slope_pct')}%")
     else:
-        lines.append("Soil: no USDA SSURGO data here (US only) - soil needs were not checked.")
+        lines.append("Soil: the USDA SSURGO service did not answer - soil needs were not checked.")
     cr = field.current_rotation
     if cr:
         lines.append(f"Current rotation ({cr.get('source', 'you')}): " + " -> ".join(cr["crops"])
                      + ("" if cr.get("repeating", True) else "  (no clear repeating pattern; recent crops)"))
     else:
-        lines.append("Current rotation: unknown (no CropScape history here; pass --current to add it)")
+        lines.append("Current rotation: unknown (CropScape shows no crop rotation at this point; "
+                     "enter your last rotation to compare against it)")
     return lines
 
 
@@ -288,7 +290,7 @@ def text_report(rec) -> str:
     """The whole recommendation as printable text."""
     bar = "=" * 90
     lines = [bar, "  FIELD SHIFT - crop rotation options", bar, ""]
-    lines += _field_summary(rec.field, rec.country) + [_previous_crop_line(rec.previous_crop)]
+    lines += _field_summary(rec.field, rec.country, rec.place) + [_previous_crop_line(rec.previous_crop)]
     if rec.must_grow:
         lines.append("Must grow (in every option): " + ", ".join(rec.must_grow))
     if rec.budget:

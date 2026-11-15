@@ -16,7 +16,8 @@ from .NASA_POWER_pull import get_climate
 from .NASA_SMAP_pull import get_soil_moisture
 from .USDA_CropScape_pull import get_crop_history
 from .USDA_SSURGO_pull import get_soil
+from .US_ZipCode_pull import get_zip_location
 
-__all__ = ["get_climate", "get_soil_moisture", "get_crop_history", "get_soil",
+__all__ = ["get_climate", "get_soil_moisture", "get_crop_history", "get_soil", "get_zip_location",
            "get_crop_requirements", "get_country", "get_crop_economics", "find_country",
            "TEST_FIELD", "DATA_DIR"]

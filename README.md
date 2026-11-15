@@ -1,21 +1,26 @@
 # Field Shift: Adapting Farms with NASA Data
 
-NASA Space Apps 2026 challenge. Give the tool a location and a date range; it pulls NASA, USDA and
-FAO data for that spot, scores every rotation crop in FAO EcoCrop (several hundred, no hand-picked
+NASA Space Apps 2026 challenge. Give the tool a US zip code (or a latitude and longitude) and a date
+range; it pulls NASA, USDA and FAO data for that spot, scores every rotation crop in FAO EcoCrop (several hundred, no hand-picked
 list) against the field's climate and soil, prices them with FAOSTAT yields and farm prices for the
 field's country, and recommends the **top 3 crop rotations** next to the field's **current
 rotation**. For each one it explains why it was suggested, the evidence, the money, the benefits,
 the information gaps, and the risks to check locally. It supports, and does not replace, farmer
 judgement and local expertise.
 
+**Where it works: the contiguous United States (the 48 states).** Field-level soil (USDA SSURGO)
+and crop history (USDA CropScape) only exist there, so other locations are refused with a plain
+message rather than answered with half the checks missing.
+
 ## Quick start
 
 ```
 py -3.11 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe source\demo.py                         # Iowa test field, last 10 years
+.venv\Scripts\python.exe source\demo.py                         # default test field, last 10 years
+.venv\Scripts\python.exe source\demo.py --zip 50010             # the centre of a US zip code area
 .venv\Scripts\python.exe source\demo.py --lat 42.065 --lon -93.73 --start 2015-01-01 --end 2024-12-31 --priority build_soil
-.venv\Scripts\python.exe source\demo.py --lat 51.45 --lon -2.58 --current wheat barley    # outside the US
+.venv\Scripts\python.exe source\demo.py --current corn corn soybean          # your rotation, if CropScape has it wrong
 .venv\Scripts\python.exe source\demo.py --previous corn         # what should follow corn?
 .venv\Scripts\python.exe source\demo.py --must-grow rice soybean                # build a rotation around these
 .venv\Scripts\python.exe source\demo.py --price corn=180 --yield corn=12.5 --cost corn=900   # your own figures (USD)
@@ -32,8 +37,11 @@ Priorities: `balanced` (default), `save_water`, `build_soil`, `extra_income`.
 
 - **Home page:** the plots are side bars on the left, 5 to start with. "Add plot" asks for a name
   and a size and stops at 10. Plots are saved in `source/databases/gui/plots.json`.
-- **Click a plot** to open it. Set its size (hectares), latitude, longitude and last rotation at
-  the top and press Save, then use the tabs:
+- **Click a plot** to open it. Set its size (hectares) and last rotation at the top. For its
+  location, type the zip code and press **Find location**: the latitude and longitude of the
+  centre of that zip area are filled in. That point is often a town or woodland, and soil and
+  crop history are looked up at one exact point, so change the two numbers to the field's own
+  position if you know it. Press Save, then use the tabs:
   - **Budget** - what you can spend on growing costs a year for the whole plot; needs the cost per
     hectare of at least one crop you know.
   - **Crop planting** - one or two crops you want to grow; rotations are built around them.
@@ -63,7 +71,7 @@ from backend import recommend_after_crop, recommend_around_crops   # with source
 rec = recommend_after_crop(42.065, -93.73, "2015-01-01", "2024-12-31", last_crop="corn")
 
 # 2. "I have to grow these one or two crops. Build a rotation around them."
-rec = recommend_around_crops(32.617, 130.629, "2015-01-01", "2024-12-31", must_grow=["rice"])
+rec = recommend_around_crops(34.75, -91.5, "2015-01-01", "2024-12-31", must_grow=["rice"])
 
 # 3. "I can spend $9,000 a year on this 12 ha plot. What can I afford?"
 #    (from backend import recommend_within_budget; needs at least one crop's cost)
@@ -83,27 +91,36 @@ rotation_years=3, irrigated=False, use_smap=False,
 farm_numbers={"corn": {"price": 180, "yield": 12.5, "cost": 900}},
                                   # the farmer's own figures, each optional: price in US dollars
                                   # per tonne, yield in tonnes per hectare, cost in US dollars per hectare
-country=None,                     # for FAOSTAT prices, e.g. "Japan"; default: found from lat/lon
+place=None,                       # a name for the spot, shown in the report, e.g. "Ames, Iowa (zip 50010)"
 on_progress=print,                # status messages for a loading screen
 ```
 
 `recommend(lat, lon, start_date, end_date, ...)` is the pipeline both call; it still works on its
 own, with `previous_crop=` and `must_grow=` as optional settings.
 
+The location is always a latitude and longitude. To start from a zip code:
+
+```python
+from data_pullers import get_zip_location
+spot = get_zip_location("50010")   # {"zip", "place": "Ames", "state": "Iowa", "state_code", "lat", "lon"}
+rec = recommend(spot["lat"], spot["lon"], "2015-01-01", "2024-12-31")
+```
+
 Bad inputs raise `ValueError` with a plain message (e.g. "The date range must cover at least 12
-months", or "sugarcane cannot be grown to harvest at this location in any month").
+months", "sugarcane cannot be grown to harvest at this location in any month", or "Latitude 51.45,
+longitude -2.58 is outside the contiguous United States").
 
 ### Where the money figures come from
 
 All of it is in `source/decision/economics.py`, which builds one `Economy` object; no other
 decision module reads prices.
 
-- **Income per hectare** = average yield x price paid to farmers, both from FAOSTAT for the country
-  the field is in (average of the latest 5 years with data), in US dollars. The farmer's own price
+- **Income per hectare** = average yield x price paid to farmers, both from FAOSTAT for the
+  United States (average of the latest 5 years with data), in US dollars. The farmer's own price
   or yield replaces FAOSTAT's; with both, a crop FAOSTAT does not cover (e.g. alfalfa hay) can be
   priced. A missing local price is estimated from the world median at the country's price level.
 - **Typical hectare**: the area-weighted average income of everything the country grows (about
-  $2,400 in the US, $18,000 in Japan). Income is scored against it: 0.5 = typical, 1 = ten times
+  $2,400 in the US). Income is scored against it: 0.5 = typical, 1 = ten times
   typical. A rotation is scored once, on its real dollars per hectare per year.
 - **Local market**: the crop's share of the country's harvested area. FAOSTAT has no costs, but
   what farmers actually plant shows what pays after costs and what can be sold.
@@ -139,7 +156,8 @@ front end / demo.py  ->  backend.recommend_after_crop() / recommend_around_crops
 | `source/data_pullers/USDA_CropScape_pull.py` | What was grown on the field each year (US only) |
 | `source/data_pullers/USDA_SSURGO_pull.py` | Soil: pH, texture, drainage, organic matter, slope... (US only) |
 | `source/data_pullers/FAO_EcoCrop_pull.py` | What ~2,500 crops need (temperature, rain, pH, soil, season length) |
-| `source/data_pullers/FAOSTAT_pull.py` | Farm prices and yields per country, and which country a point is in |
+| `source/data_pullers/FAOSTAT_pull.py` | Farm prices and yields per country (the tool uses the United States) |
+| `source/data_pullers/US_ZipCode_pull.py` | Where a US zip code is: place name, state, latitude and longitude of its centre |
 | `source/data_pullers/_common.py` | Settings, input checks, the shared "save it the first time" helper |
 | `source/decision/field_profile.py` | Turns the raw data into one `FieldProfile` |
 | `source/decision/crops.py` | Builds the crop list from EcoCrop: filters out trees, ornamentals and medicinals; reads family, uses and winter hardiness |
@@ -157,6 +175,7 @@ saved copy after, and `refresh=True` downloads again. Each one returns a pandas 
 
 | Function | Needs | Optional | Limits |
 |---|---|---|---|
+| `get_zip_location(zip_code)` | a US zip code | `refresh` | returns a dict; the point is the centre of the zip area, not a field |
 | `get_climate(lat, lon, start_date, end_date)` | location, dates | `refresh` | worldwide, 1981 onwards |
 | `get_soil_moisture(lat, lon, start_date, end_date)` | location, dates, Earthdata login | `product`, `refresh` | 2015-03-31 onwards; slow queue |
 | `get_crop_history(lat, lon, start_year, end_year)` | location | years (default 2008 to last year), `refresh` | contiguous US |
@@ -216,4 +235,7 @@ the plants EcoCrop labels "cover crop".
 - Forage crops (hay) and cover crops have no FAOSTAT price; hay needs the farmer's price and yield.
 - One FAOSTAT item can price several similar crops (wheat and durum wheat, cauliflower and broccoli).
 - All money is in US dollars.
-- NASA POWER is a ~50 km grid, and soil and crop history are US-only.
+- NASA POWER is a ~50 km grid.
+- Contiguous United States only: soil and crop history do not exist elsewhere in this form.
+- A zip code gives the centre of its area, not a field. Soil and crop history describe that one
+  point until the latitude and longitude are moved onto the field.

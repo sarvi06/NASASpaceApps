@@ -5,6 +5,9 @@ No tkinter here, so it can be used and tested without a window.
     store = PlotStore()                 # loads databases/gui/plots.json, or starts with 5 plots
     store.add("North field", 3.5)       # up to MAX_PLOTS
     store.update(0, lat=42.065, lon=-93.73, last_rotation=["corn", "soybean"])
+
+A plot's location is its latitude and longitude. The zip code is how the farmer found them
+(gui/plot_view.py looks it up) and `place` is the name that came back, e.g. "Ames, Iowa (zip 50010)".
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from data_pullers._common import DATA_DIR, check_location
+from data_pullers.US_ZipCode_pull import check_zip
 
 DEFAULT_PLOTS = 5
 MAX_PLOTS = 10
@@ -28,6 +32,8 @@ class Plot:
     lat: float | None = None
     lon: float | None = None
     last_rotation: tuple[str, ...] = ()      # crops grown most recently, oldest first
+    zip_code: str = ""                       # US zip code the location was found from, if any
+    place: str = ""                          # its name, e.g. "Ames, Iowa (zip 50010)"
 
     @property
     def located(self) -> bool:
@@ -67,7 +73,10 @@ def _checked(plot: Plot) -> Plot:
         lat = lon = None
     else:
         lat, lon = check_location(lat, lon)
-    return Plot(name, parse_size(plot.size_ha), lat, lon, parse_crops(plot.last_rotation))
+    zip_code = check_zip(plot.zip_code) if str(plot.zip_code or "").strip() else ""
+    place = str(plot.place or "").strip() if zip_code else ""
+    return Plot(name, parse_size(plot.size_ha), lat, lon, parse_crops(plot.last_rotation),
+                zip_code, place)
 
 
 @dataclass
@@ -110,7 +119,8 @@ class PlotStore:
         return plot
 
     def update(self, index: int, **changes) -> Plot:
-        """Change some of a plot's details (name, size_ha, lat, lon, last_rotation)."""
+        """Change some of a plot's details (name, size_ha, lat, lon, last_rotation, zip_code,
+        place)."""
         plot = _checked(replace(self.plots[index], **changes))
         others = {p.name.lower() for i, p in enumerate(self.plots) if i != index}
         if plot.name.lower() in others:
