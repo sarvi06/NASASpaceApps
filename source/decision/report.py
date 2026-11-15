@@ -220,14 +220,15 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
 # --------------------------------------------------------------------------------------
 # Full text report (used by demo.py)
 # --------------------------------------------------------------------------------------
-def _field_summary(field) -> list[str]:
+def _field_summary(field, country: dict | None = None) -> list[str]:
     i = field.insights
-    lines = [f"Location: {field.lat}, {field.lon}"
+    lines = [f"Location: latitude {field.lat}, longitude {field.lon}"
+             + (f", {country['name']}" if country else "")
              + (f"  (elevation {field.elevation_m:.0f} m)" if field.elevation_m is not None else ""),
              f"Data period: {field.start_date} to {field.end_date} ({i.get('years_of_data')} years)", ""]
     from .suitability import Climate
-    lines += ["Monthly climate (NASA POWER): Tmean = average temp, Tmin = typical coldest night, "
-              "Rain = typical monthly total (mm)",
+    lines += ["Monthly climate (NASA POWER): Tmean = average temp, Coldest = typical coldest night "
+              "of the month (not the average night), Rain = typical monthly total (mm)",
               Climate.from_monthly(field.climate_monthly).table(), ""]
     facts = [
         ("Annual rain", f"{i.get('annual_rain_mm'):.0f} mm"
@@ -287,7 +288,7 @@ def text_report(rec) -> str:
     """The whole recommendation as printable text."""
     bar = "=" * 90
     lines = [bar, "  FIELD SHIFT - crop rotation options", bar, ""]
-    lines += _field_summary(rec.field) + [_previous_crop_line(rec.previous_crop)]
+    lines += _field_summary(rec.field, rec.country) + [_previous_crop_line(rec.previous_crop)]
     if rec.must_grow:
         lines.append("Must grow (in every option): " + ", ".join(rec.must_grow))
     if rec.budget:

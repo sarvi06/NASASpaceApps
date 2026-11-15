@@ -42,6 +42,20 @@ def test_recommend_returns_three_options_and_current_rotation(offline):
     json.dumps(rec.to_dict())                                    # front-end friendly
 
 
+def test_point_in_the_sea_or_on_ice_is_refused(offline, monkeypatch):
+    def ocean(lat, lon, s, e):                       # NASA POWER has no soil wetness off land
+        return fake_power_daily(s.year, e.year).assign(GWETROOT=float("nan"))
+    monkeypatch.setattr(backend, "get_climate", ocean)
+    with pytest.raises(ValueError, match="in the sea or on ice.*latitude first"):
+        backend.recommend(-74, 39, "2015-01-01", "2024-12-31")
+
+
+def test_report_says_which_country_the_point_is_in(offline):
+    text = backend.recommend(*ARGS).to_text()
+    assert "Location: latitude 42.065, longitude -93.73, United States" in text
+    assert "Coldest" in text
+
+
 def test_priorities_and_user_rotation(offline):
     rec = backend.recommend(42.065, -93.73, "2015-01-01", "2024-12-31",
                             priorities="save_water", current_rotation=["corn", "corn", "soybean"])

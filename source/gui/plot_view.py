@@ -11,8 +11,8 @@ from .tabs import TABS
 from .theme import Theme
 
 # (attribute of Plot, label, entry width)
-DETAILS = (("name", "Name", 14), ("size_ha", "Size (ha)", 7), ("lat", "Latitude", 9),
-           ("lon", "Longitude", 9), ("last_rotation", "Last rotation, oldest first", 26))
+DETAILS = (("name", "Name", 14), ("size_ha", "Size (ha)", 7), ("lat", "Latitude (N +, S -)", 9),
+           ("lon", "Longitude (E +, W -)", 9), ("last_rotation", "Last rotation, oldest first", 26))
 
 
 def _shown(value) -> str:

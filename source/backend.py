@@ -174,6 +174,7 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
         raise
     except Exception as exc:
         raise RuntimeError(f"Could not get NASA POWER climate data: {exc}") from exc
+    _check_on_land(climate, lat, lon)
     sources.append("NASA POWER daily climate (power.larc.nasa.gov)")
 
     say("Downloading USDA SSURGO soil...")
@@ -351,6 +352,16 @@ def recommend_within_budget(lat: float, lon: float, start_date, end_date, budget
         raise ValueError("A budget needs both budget_usd and plot_size_ha.")
     return recommend(lat, lon, start_date, end_date, budget_usd=budget_usd,
                      plot_size_ha=plot_size_ha, farm_numbers=farm_numbers, **options)
+
+
+def _check_on_land(climate: pd.DataFrame, lat: float, lon: float) -> None:
+    """ValueError if the point is in the sea or on an ice sheet: NASA POWER has no root-zone
+    soil wetness there. Usually latitude and longitude were swapped or a sign is wrong."""
+    if "GWETROOT" in climate and climate["GWETROOT"].isna().all():
+        raise ValueError(f"Latitude {lat:g}, longitude {lon:g} is in the sea or on ice, not on "
+                         f"farmland (NASA POWER has no soil data there). Check the order and the "
+                         f"signs: latitude first (north +, south -), then longitude (east +, "
+                         f"west -), e.g. 42.065, -93.73 for Iowa.")
 
 
 def _check_budget(budget_usd, plot_size_ha, farm_numbers: dict | None) -> dict | None:

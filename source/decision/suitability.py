@@ -63,10 +63,10 @@ class Climate:
         return float(sum(self.precip))
 
     def table(self) -> str:
-        rows = [f"{'':<6}" + "".join(f"{m:>7}" for m in MONTHS),
-                f"{'Tmean':<6}" + "".join(f"{v:7.1f}" for v in self.tmean),
-                f"{'Tmin':<6}" + "".join(f"{v:7.1f}" for v in self.tmin_ext),
-                f"{'Rain':<6}" + "".join(f"{v:7.0f}" for v in self.precip)]
+        rows = [f"{'':<8}" + "".join(f"{m:>7}" for m in MONTHS),
+                f"{'Tmean':<8}" + "".join(f"{v:7.1f}" for v in self.tmean),
+                f"{'Coldest':<8}" + "".join(f"{v:7.1f}" for v in self.tmin_ext),
+                f"{'Rain':<8}" + "".join(f"{v:7.0f}" for v in self.precip)]
         return "\n".join(rows)
 
 
