@@ -4,6 +4,8 @@
         "I just grew this. What rotation should follow it?"
     recommend_around_crops(lat, lon, start_date, end_date, must_grow=["rice"])
         "I have to grow these one or two crops. Build a rotation around them."
+    recommend_within_budget(lat, lon, start_date, end_date, budget_usd, plot_size_ha, farm_numbers)
+        "I can spend this much a year on this plot. What can I afford?"
     recommend(lat, lon, start_date, end_date, ...)
         the pipeline both use (and the original entry point, still supported)
 
@@ -71,6 +73,7 @@ class Recommendation:
     country: dict | None = None             # {"name", "iso2", "m49"} used for prices and yields
     economy: Economy = field(default_factory=Economy)    # what each crop earns and how it sells
     crops: dict = field(default_factory=dict)            # every candidate, {scientific name: Crop}
+    budget: dict | None = None              # {"budget_usd", "plot_size_ha", "max_cost_usd_ha"}
     warnings: list[str] = field(default_factory=list)
     data_sources: list[str] = field(default_factory=list)
     inputs: dict = field(default_factory=dict)
@@ -85,6 +88,7 @@ class Recommendation:
             "priorities": {"name": self.priority_name, "weights": self.weights, "card_items": CARD},
             "previous_crop": self.previous_crop,
             "must_grow": self.must_grow,
+            "budget": self.budget,
             "country": self.country,
             "economy": {"typical_income_usd_ha": self.economy.typical_income,
                         "assumed_cost_share": self.economy.cost_share},
@@ -108,7 +112,8 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
               on_progress: Callable[[str], None] | None = None,
               previous_crop: str | None = None, must_grow: list[str] | None = None,
               farm_numbers: dict | None = None,
-              country: str | None = None) -> Recommendation:
+              country: str | None = None, budget_usd: float | None = None,
+              plot_size_ha: float | None = None) -> Recommendation:
     """Top 3 crop rotations for a location, using data between start_date and end_date.
 
     lat, lon          decimal degrees
@@ -132,6 +137,9 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
                       same share of their income, so profit is compared with profit)
     country           country used for FAOSTAT prices and yields, e.g. "Japan" or "JP";
                       default = looked up from lat/lon
+    budget_usd, plot_size_ha   given together: the most the farmer can spend on growing
+                      costs per year for a plot of that size. Rotations costing more per
+                      hectare are left out. Needs at least one cost in farm_numbers.
     """
     say = on_progress or (lambda msg: None)
     warnings: list[str] = []
@@ -156,6 +164,7 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
     if len(must_grow) > MAX_MUST_GROW:
         raise ValueError(f"must_grow takes one or two crop names, got {len(must_grow)}.")
     place = find_country(country) if country else None
+    budget = _check_budget(budget_usd, plot_size_ha, farm_numbers)
 
     # ---- 2. data ----
     say("Downloading NASA POWER climate...")
@@ -260,9 +269,12 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
         raise ValueError(f"No {rotation_years}-year rotation can include {names}: crops of the same "
                          f"family cannot follow each other and each year needs a harvest crop. "
                          f"Try a longer rotation (rotation_years up to 4) or one must-grow crop.")
+    if budget and found:
+        found = _within_budget(found, budget)
     top = pick_top(found, 3, familiar, shared=must)
     if len(top) < 3:
-        warnings.append(f"Only {len(top)} distinct rotation(s) suit this field's climate and soil.")
+        warnings.append(f"Only {len(top)} distinct rotation(s) suit this field's climate and soil"
+                        + (" within the budget." if budget else "."))
 
     if last_grown:
         clash = [rot.name for rot in top if follow_score(last_grown, rot.harvests[0].crop)[0] == 0]
@@ -285,18 +297,19 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
     for rot in top + ([baseline] if baseline else []):
         rot.explanation = report.explain(rot, fp, None if rot is baseline else baseline, weights,
                                          priority_name, familiar, used_smap=smap is not None,
-                                         economy=economy)
+                                         economy=economy, budget=budget)
     say("Done.")
     return Recommendation(
         field=fp, rotations=top, baseline=baseline, best_crops=best_single_crops(by_start),
         weights=weights, priority_name=priority_name, previous_crop=previous,
         must_grow=[crops[s].name for s in must], country=place,
-        economy=economy, crops=crops,
+        economy=economy, crops=crops, budget=budget,
         warnings=warnings, data_sources=sources,
         inputs={"lat": lat, "lon": lon, "start_date": str(start), "end_date": str(end),
                 "priorities": priorities, "current_rotation": current_rotation,
                 "previous_crop": previous_crop, "must_grow": must_grow,
                 "farm_numbers": farm_numbers, "country": country,
+                "budget_usd": budget_usd, "plot_size_ha": plot_size_ha,
                 "rotation_years": rotation_years, "irrigated": irrigated, "use_smap": use_smap},
     )
 
@@ -324,6 +337,49 @@ def recommend_around_crops(lat: float, lon: float, start_date, end_date, must_gr
         raise ValueError(f"must_grow takes one or two crop names, got {len(names)}.")
     return recommend(lat, lon, start_date, end_date, must_grow=names, previous_crop=last_crop,
                      **options)
+
+
+def recommend_within_budget(lat: float, lon: float, start_date, end_date, budget_usd: float,
+                            plot_size_ha: float, farm_numbers: dict, **options) -> Recommendation:
+    """Top 3 rotations the farmer can afford: growing costs per year for the whole plot stay
+    within `budget_usd`.
+
+    FAOSTAT has no costs, so `farm_numbers` must hold a cost for at least one crop, e.g.
+    {"corn": {"cost": 900}} (US dollars per hectare); other crops are assumed to cost the same
+    share of their income. `options` are the same as recommend()'s."""
+    if budget_usd is None or plot_size_ha is None:
+        raise ValueError("A budget needs both budget_usd and plot_size_ha.")
+    return recommend(lat, lon, start_date, end_date, budget_usd=budget_usd,
+                     plot_size_ha=plot_size_ha, farm_numbers=farm_numbers, **options)
+
+
+def _check_budget(budget_usd, plot_size_ha, farm_numbers: dict | None) -> dict | None:
+    """Validate the budget inputs -> {"budget_usd", "plot_size_ha", "max_cost_usd_ha"} or None."""
+    if budget_usd is None and plot_size_ha is None:
+        return None
+    try:
+        budget_usd, plot_size_ha = float(budget_usd), float(plot_size_ha)
+    except (TypeError, ValueError):
+        raise ValueError("A budget needs both budget_usd and plot_size_ha, as numbers.") from None
+    if budget_usd <= 0 or plot_size_ha <= 0:
+        raise ValueError("budget_usd and plot_size_ha must both be more than 0.")
+    if not any("cost" in numbers for numbers in (farm_numbers or {}).values()
+               if isinstance(numbers, dict)):
+        raise ValueError("To plan within a budget, enter what at least one crop costs you per "
+                         "hectare: there is no cost data to work from otherwise.")
+    return {"budget_usd": budget_usd, "plot_size_ha": plot_size_ha,
+            "max_cost_usd_ha": budget_usd / plot_size_ha}
+
+
+def _within_budget(found: list[Rotation], budget: dict) -> list[Rotation]:
+    """The rotations whose known yearly cost per hectare fits the budget (best first, as given)."""
+    affordable = [rot for rot in found if rot.cost_usd_ha <= budget["max_cost_usd_ha"]]
+    if not affordable:
+        cheapest = min(rot.cost_usd_ha for rot in found) * budget["plot_size_ha"]
+        raise ValueError(f"No rotation fits a budget of ${budget['budget_usd']:,.0f} a year for "
+                         f"{budget['plot_size_ha']:g} ha: the cheapest one found costs about "
+                         f"${cheapest:,.0f} a year.")
+    return affordable
 
 
 def _check_must_grow(crop: Crop, by_start: dict, clim: Climate, site: dict | None,
@@ -376,5 +432,6 @@ def _previous_crop(name: str | None, history: pd.DataFrame, given: dict | None,
     return None
 
 
-__all__ = ["recommend", "recommend_after_crop", "recommend_around_crops", "Recommendation",
+__all__ = ["recommend", "recommend_after_crop", "recommend_around_crops",
+           "recommend_within_budget", "Recommendation",
            "PRIORITY_PRESETS"]

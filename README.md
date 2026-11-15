@@ -24,7 +24,37 @@ py -3.11 -m venv .venv
 
 Priorities: `balanced` (default), `save_water`, `build_soil`, `extra_income`.
 
-## For the front end: two questions, two functions
+## The app
+
+```
+.venv\Scripts\python.exe source\user_interface.py
+```
+
+- **Home page:** the plots are side bars on the left, 5 to start with. "Add plot" asks for a name
+  and a size and stops at 10. Plots are saved in `source/databases/gui/plots.json`.
+- **Click a plot** to open it. Set its size (hectares), latitude, longitude and last rotation at
+  the top and press Save, then use the tabs:
+  - **Budget** - what you can spend on growing costs a year for the whole plot; needs the cost per
+    hectare of at least one crop you know.
+  - **Crop planting** - one or two crops you want to grow; rotations are built around them.
+  - **Rotation** - the best rotations for the plot, following its last crop if it is filled in.
+- Every tab has the same settings row, an optional "Your numbers" table (your own price, yield and
+  cost per crop) and a results box. Runs happen in the background, so the window stays usable.
+
+**Adding a tab:** write a small `BaseTab` subclass in `source/gui/tabs/` (`rotation.py` is the
+smallest example) and add it to `TABS` in `source/gui/tabs/__init__.py`.
+
+| File | What it does |
+|---|---|
+| `source/user_interface.py` | Home page: window, side bar, and the open plot |
+| `source/gui/theme.py` | Colours, fonts and cursor |
+| `source/gui/plots.py` | The plots and saving them (no tkinter) |
+| `source/gui/home.py` | Side bar of plot buttons, "Add plot" |
+| `source/gui/plot_view.py` | One plot: its details and its tabs |
+| `source/gui/runner.py` | Runs a back-end call in the background |
+| `source/gui/tabs/` | `base.py` (what every tab shares), `budget.py`, `crops.py`, `rotation.py` |
+
+## For the front end: three questions, three functions
 
 ```python
 from backend import recommend_after_crop, recommend_around_crops   # with source/ on the Python path
@@ -35,11 +65,16 @@ rec = recommend_after_crop(42.065, -93.73, "2015-01-01", "2024-12-31", last_crop
 # 2. "I have to grow these one or two crops. Build a rotation around them."
 rec = recommend_around_crops(32.617, 130.629, "2015-01-01", "2024-12-31", must_grow=["rice"])
 
+# 3. "I can spend $9,000 a year on this 12 ha plot. What can I afford?"
+#    (from backend import recommend_within_budget; needs at least one crop's cost)
+rec = recommend_within_budget(42.065, -93.73, "2015-01-01", "2024-12-31", budget_usd=9000,
+                              plot_size_ha=12, farm_numbers={"corn": {"cost": 900}})
+
 rec.to_text()     # the full report as text
 rec.to_dict()     # everything as JSON-safe dicts: field, recommended_rotations, economics, ...
 ```
 
-Both take the same optional settings:
+All three take the same optional settings:
 
 ```python
 priorities="balanced",            # or a dict of weights

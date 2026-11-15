@@ -119,6 +119,7 @@ class Rotation:
     overall: float = 0.0
     income_usd_ha: float = 0.0     # estimated US dollars per hectare per year (priced crops only)
     trusted_income_usd_ha: float = 0.0   # the part of it the income score counts
+    cost_usd_ha: float = 0.0       # known growing costs, US dollars per hectare per year
     is_baseline: bool = False
     strategy: str = ""             # why it was picked, e.g. "best for your priority"
     start_note: str = ""           # why it starts with this crop, given the field's last crop
@@ -175,6 +176,7 @@ class Rotation:
             "overall": round(self.overall, 3),
             "income_usd_ha_per_year": round(self.income_usd_ha),
             "trusted_income_usd_ha_per_year": round(self.trusted_income_usd_ha),
+            "cost_usd_ha_per_year": round(self.cost_usd_ha),
             "card": {k: round(v, 3) for k, v in self.card.items()},
             "steps": [{
                 "year": a // 12 % self.years + 1,
@@ -195,6 +197,13 @@ def yearly_income(rot: Rotation, economy: Economy, trusted: bool = False) -> flo
     trusted=True gives the figure the ranking counts (Economy.trusted_income)."""
     income = economy.trusted_income if trusted else economy.income
     return sum(income(s.crop) * s.score for s in rot.harvests) / rot.years
+
+
+def yearly_cost(rot: Rotation, economy: Economy) -> float:
+    """Known growing costs in US dollars per hectare per year: the harvest crops' costs
+    (entered by the farmer or estimated from them) spread over the rotation's years.
+    Cover-crop costs are not known and not included."""
+    return sum(economy.cost(s.crop) for s in rot.harvests) / rot.years
 
 
 def score_card(rot: Rotation, clim: Climate, economy: Economy | None = None,
@@ -227,6 +236,7 @@ def rate(rot: Rotation, clim: Climate, weights: dict, economy: Economy | None = 
     rot.card = score_card(rot, clim, economy, insights, previous)
     rot.income_usd_ha = yearly_income(rot, economy)
     rot.trusted_income_usd_ha = yearly_income(rot, economy, trusted=True)
+    rot.cost_usd_ha = yearly_cost(rot, economy)
     rot.overall = sum(weights[k] * rot.card[k] for k in CARD)
     return rot
 

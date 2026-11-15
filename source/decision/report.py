@@ -59,7 +59,7 @@ def _covered_per_year(rot: Rotation) -> float:
 
 def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
             priority_name: str, familiar: set | None = None, used_smap: bool = False,
-            economy: Economy | None = None) -> dict:
+            economy: Economy | None = None, budget: dict | None = None) -> dict:
     """why / evidence / benefits / gaps / risks for one rotation (lists of plain sentences)."""
     economy = economy or Economy()
     card, insights = rot.card, field.insights
@@ -123,6 +123,12 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
                           f"income far above the typical hectare from a crop few farmers here grow "
                           f"usually means high costs or few buyers that FAOSTAT does not show. Enter "
                           f"your own price or cost for a crop to have its income counted in full.")
+    if budget:
+        yearly = rot.cost_usd_ha * budget["plot_size_ha"]
+        verdict = "within" if rot.cost_usd_ha <= budget["max_cost_usd_ha"] else "OVER"
+        benefits.append(f"Growing costs of about ${yearly:,.0f} a year for the whole plot "
+                        f"({budget['plot_size_ha']:g} ha at ${rot.cost_usd_ha:,.0f} per hectare): "
+                        f"{verdict} your budget of ${budget['budget_usd']:,.0f}.")
     established = [s for s in priced if economy.market(s.crop) >= WIDELY_GROWN]
     if established:
         benefits.append(f"{_names(established)} {_verb(established, 'is', 'are')} widely grown in "
@@ -174,6 +180,9 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
         gaps.append(f"The cost of {_names(guessed)} is assumed to be {economy.cost_share:.0%} of "
                     f"income, the share in the costs you entered, so that every crop is compared "
                     f"on profit. Enter the real cost if it differs.")
+    if budget and rot.covers:
+        gaps.append(f"The cost of the cover crops ({_names(rot.covers)}) is not known and is not "
+                    f"in the budget figure: add seed and labour for them.")
     gaps.append("EcoCrop ranges are for the species as a whole; local varieties can differ.")
     gaps.append("NASA POWER climate is a ~50 km grid average, not a measurement at the field.")
     if not used_smap:
@@ -281,6 +290,9 @@ def text_report(rec) -> str:
     lines += _field_summary(rec.field) + [_previous_crop_line(rec.previous_crop)]
     if rec.must_grow:
         lines.append("Must grow (in every option): " + ", ".join(rec.must_grow))
+    if rec.budget:
+        lines.append(f"Budget: ${rec.budget['budget_usd']:,.0f} a year for {rec.budget['plot_size_ha']:g} ha"
+                     f" = at most ${rec.budget['max_cost_usd_ha']:,.0f} per hectare a year")
     economy = rec.economy
     if economy.crops:
         lines.append(f"Prices and yields: {len(economy.crops)} crops priced"

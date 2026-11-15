@@ -119,6 +119,11 @@ class Economy:
         priced = self.get(crop)
         return priced.income_usd_ha if priced else 0.0
 
+    def cost(self, crop: Crop) -> float:
+        """Cost per hectare of growing the crop, entered or estimated (0 if unknown)."""
+        priced = self.get(crop)
+        return (priced.cost_usd_ha or 0.0) if priced else 0.0
+
     def score(self, income_usd_ha: float) -> float:
         """0-1 for an income per hectare: 0.5 = the country's typical hectare, 1.0 = ten times
         it, 0 = a tenth of it or a loss."""

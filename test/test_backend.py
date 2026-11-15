@@ -154,6 +154,38 @@ def test_entered_costs_compare_every_crop_on_profit(offline):
     assert costed.to_dict()["economy"]["assumed_cost_share"] == pytest.approx(0.5)
 
 
+def test_budget_keeps_only_rotations_the_farmer_can_afford(offline):
+    costs = {"corn": {"cost": 1100}}                                   # half of corn's income
+    free = backend.recommend(*ARGS, farm_numbers=costs)
+    dearest = max(r.cost_usd_ha for r in free.rotations)
+    assert dearest > 800 and free.budget is None
+
+    rec = backend.recommend_within_budget(*ARGS, budget_usd=8000, plot_size_ha=10, farm_numbers=costs)
+    assert rec.budget == {"budget_usd": 8000.0, "plot_size_ha": 10.0, "max_cost_usd_ha": 800.0}
+    assert len(rec.rotations) == 3 and all(r.cost_usd_ha <= 800 for r in rec.rotations)
+    for rot in rec.rotations:
+        known = sum(rec.economy.cost(s.crop) for s in rot.harvests) / rot.years
+        assert rot.cost_usd_ha == pytest.approx(known)
+        assert rot.to_dict()["cost_usd_ha_per_year"] == round(known)
+        assert "within your budget of $8,000" in " ".join(rot.explanation["benefits"])
+    text = rec.to_text()
+    assert "Budget: $8,000 a year for 10 ha = at most $800 per hectare a year" in text
+    assert rec.to_dict()["budget"]["max_cost_usd_ha"] == 800
+
+
+@pytest.mark.parametrize("budget, size, numbers, message", [
+    (50, 10, {"corn": {"cost": 1100}}, "No rotation fits a budget of \\$50"),
+    (8000, 10, None, "at least one crop costs"),
+    (8000, 10, {"corn": {"price": 200}}, "at least one crop costs"),
+    (0, 10, {"corn": {"cost": 1100}}, "more than 0"),
+    (8000, None, {"corn": {"cost": 1100}}, "both budget_usd and plot_size_ha"),
+    ("lots", 10, {"corn": {"cost": 1100}}, "as numbers"),
+])
+def test_budget_problems_give_clear_errors(offline, budget, size, numbers, message):
+    with pytest.raises(ValueError, match=message):
+        backend.recommend_within_budget(*ARGS, budget, size, numbers)
+
+
 def test_farmer_price_and_yield_make_an_unlisted_crop_usable(offline):
     rec = backend.recommend_around_crops(*ARGS, ["alfalfa"],
                                          farm_numbers={"alfalfa": {"price": 220, "yield": 9}})
