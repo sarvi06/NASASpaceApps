@@ -37,9 +37,11 @@ def test_recommend_returns_three_options_and_current_rotation(offline):
         assert rot.resilience["years_checked"] == 10                  # each year's weather checked
         assert rot.resilience["scenario"]["fit_now"] == pytest.approx(rot.card["fit"], abs=1e-3)
         assert "years on record" in " ".join(e["benefits"] + e["risks"])
+        assert "rain supplies about" in " ".join(e["evidence"])       # water need from NASA POWER ET0
     assert progress[0].startswith("Downloading NASA POWER") and progress[-1] == "Done."
     text = rec.to_text()
     assert "OPTION 3" in text and "YOUR CURRENT ROTATION" in text and "agronomist" in text
+    assert "Evaporative demand (ET0)" in text
     json.dumps(rec.to_dict())                                    # front-end friendly
 
 

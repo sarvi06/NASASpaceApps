@@ -7,7 +7,9 @@
 2. score_card()        rates a rotation 0-1 on eight things:
                        fit, soil cover, nitrogen, diversity, crop order, water, income, market.
                        Crop order = how well each harvest crop follows the crop before it
-                       (sequence.follow_score). Income and market come from the Economy
+                       (sequence.follow_score). Water = share of each harvest crop's water
+                       need over its own season that rain supplies (water.py).
+                       Income and market come from the Economy
                        (economics.py): income is the rotation's real dollars per hectare per
                        year, scored once; market is how widely its crops are grown here.
 3. overall score       = weighted sum, weights set by the farmer's priority
@@ -24,6 +26,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from typing import Iterable
 
+from . import water
 from .crops import Crop
 from .economics import Economy
 from .sequence import can_follow, follow_score
@@ -38,7 +41,7 @@ CARD = {
     "nitrogen": "nitrogen from legumes",
     "diversity": "crop diversity (pest & disease break)",
     "sequence": "crop order (each crop suits the one before it)",
-    "water": "low water demand",
+    "water": "water need met by rain (rain vs what the air draws from the crop)",
     "income": "income per hectare per year (vs the country's typical hectare)",
     "market": "local market (how widely the crops are grown in this country)",
 }
@@ -85,8 +88,20 @@ def harvests_per_year(clim: Climate) -> int:
     return 2 if sum(t >= 10 for t in clim.tmean) >= 8 else 1
 
 
-def water_score(crop: Crop, available_rain: float) -> float:
-    """1 = needs much less rain than falls, 0 = needs more than falls (EcoCrop optimum minimum)."""
+def water_score(slot: Slot, clim: Climate, rain: float) -> float:
+    """Share of the crop's water need over its own growing months that rain supplies, 0-1
+    (water.rain_share). `rain` = the yearly rain to plan for (expected_rain), which scales
+    the monthly rain. Without ET0 (NASA POWER humidity, sunlight or wind missing) it falls
+    back to _ecocrop_water_score()."""
+    if clim.et0 is None:
+        return _ecocrop_water_score(slot.crop, rain)
+    scale = rain / clim.annual_rain if clim.annual_rain > 0 else 0.0
+    return water.rain_share(slot.start, slot.months, clim.et0, clim.precip, rain_scale=scale)
+
+
+def _ecocrop_water_score(crop: Crop, available_rain: float) -> float:
+    """Fallback: 1 = needs much less rain than falls in a year, 0 = needs more than falls
+    (EcoCrop optimum minimum). Rougher: it ignores when the rain falls and the crop's season."""
     need = crop.ropmn if crop.ropmn is not None else crop.rmin
     if need is None or available_rain <= 0:
         return 0.5
@@ -235,11 +250,11 @@ def score_card(rot: Rotation, clim: Climate, economy: Economy | None = None,
         order.append(follow_score(previous, harvests[0].crop)[0])
     sequence = sum(order) / len(order) if order else 0.0
     rain = expected_rain(clim, insights)
-    water = sum(water_score(s.crop, rain) for s in harvests) / len(harvests) if harvests else 0.0
+    wet = sum(water_score(s, clim, rain) for s in harvests) / len(harvests) if harvests else 0.0
     income = economy.score(yearly_income(rot, economy, trusted=True))
     market = sum(economy.market(s.crop) for s in harvests) / len(harvests) if harvests else 0.0
     return {"fit": fit, "cover": cover, "nitrogen": nitrogen, "diversity": diversity,
-            "sequence": sequence, "water": water, "income": income, "market": market}
+            "sequence": sequence, "water": wet, "income": income, "market": market}
 
 
 def rate(rot: Rotation, clim: Climate, weights: dict, economy: Economy | None = None,
@@ -271,8 +286,8 @@ def _last_harvest(placed) -> Slot | None:
     return None
 
 
-def _gain(placed: tuple, slot: Slot, horizon: int, years: int, weights: dict, rain: float,
-          economy: Economy, max_harvests: int = 99,
+def _gain(placed: tuple, slot: Slot, horizon: int, years: int, weights: dict, clim: Climate,
+          rain: float, economy: Economy, max_harvests: int = 99,
           must_grow: frozenset = frozenset()) -> float | None:
     """Approximate report-card increase from adding `slot` after the crops in `placed`
     (empty for the first crop of a plan), or None if it breaks a rule."""
@@ -290,7 +305,7 @@ def _gain(placed: tuple, slot: Slot, horizon: int, years: int, weights: dict, ra
     if slot.use == "harvest":
         g += weights["income"] * economy.value(c) * slot.score / years
         g += weights["market"] * economy.market(c) / years
-        g += weights["water"] * water_score(c, rain) / years
+        g += weights["water"] * water_score(slot, clim, rain) / years
         if last is not None:
             g += weights["sequence"] * follow_score(last.crop, c)[0] / years
         if c.sci in must_grow and n_same == 0:
@@ -354,7 +369,8 @@ def search_rotations(by_start: dict[int, list[Slot]], clim: Climate, weights: di
     for s0 in range(12):
         for slot in by_start.get(s0, []):
             if slot.use == "harvest" and slot.months <= horizon:
-                g = _gain((), slot, horizon, years, weights, rain, economy, max_harvests, must_grow)
+                g = _gain((), slot, horizon, years, weights, clim, rain, economy, max_harvests,
+                          must_grow)
                 levels[s0 + slot.months].append(_State(((s0, slot),), s0 + slot.months, g, s0))
 
     finals: dict[tuple, Rotation] = {}
@@ -381,7 +397,7 @@ def search_rotations(by_start: dict[int, list[Slot]], clim: Climate, weights: di
                     end = start + slot.months
                     if end > st.s0 + horizon:
                         continue
-                    g = _gain(st.placed, slot, horizon, years, weights, rain, economy,
+                    g = _gain(st.placed, slot, horizon, years, weights, clim, rain, economy,
                               max_harvests, must_grow)
                     if g is None:
                         continue

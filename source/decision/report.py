@@ -43,7 +43,11 @@ GLOSSARY = {
     "local market": "How widely a crop is grown in the field's country (its share of harvested "
                     "area, FAOSTAT). Widely grown crops have buyers, equipment and know-how; a "
                     "crop almost nobody grows usually has high costs or few buyers.",
-    "bare months": "Months with nothing growing, when soil is most exposed to wind and water "
+    "evaporative demand (ET0)": "Water the air draws from a well-watered grass field, in mm, worked "
+                                "out from NASA POWER sunlight, humidity, wind and temperature (FAO-56 "
+                                "Penman-Monteith). A crop needs roughly this much in full leaf, less "
+                                "while it emerges and ripens.",
+    "bare months":"Months with nothing growing, when soil is most exposed to wind and water "
                    "erosion and nutrients can wash out.",
 }
 
@@ -144,6 +148,11 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
         evidence += [f"    {line}" for line in s.evidence]
         if s.use == "harvest" and economy.get(s.crop):
             evidence.append(f"    Money: {economy.get(s.crop).describe()}")
+    used_et0 = insights.get("annual_et0_mm") is not None
+    if used_et0 and rot.harvests:
+        evidence.append(f"Water: rain supplies about {card['water']:.0%} of the water these crops "
+                        f"need in their seasons (need worked out from NASA POWER sunlight, humidity, "
+                        f"wind and temperature; FAO-56 method).")
 
     # ---- benefits ----
     benefits = []
@@ -193,8 +202,13 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
                         + " break pest, weed and disease cycles that build up when the same "
                           "crops repeat.")
     if baseline and card["water"] > base_card.get("water", 0) + 0.03:
-        benefits.append("Lower overall water demand than the current rotation (EcoCrop rainfall "
-                        "needs vs NASA POWER rainfall).")
+        if used_et0:
+            benefits.append(f"Rain covers more of its crops' water need than in the current rotation "
+                            f"(about {card['water']:.0%} against {base_card.get('water', 0):.0%}), "
+                            f"so it leans less on stored soil water or irrigation.")
+        else:
+            benefits.append("Lower overall water demand than the current rotation (EcoCrop rainfall "
+                            "needs vs NASA POWER rainfall).")
     # EcoCrop also tags some food crops (e.g. tomato) as forage; only name crops that are
     # grown as a cover crop or are not cash crops, or the sentence reads oddly.
     forage = [s for s in rot.slots if "forage" in s.crop.roles
@@ -297,6 +311,8 @@ def _field_summary(field, country: dict | None = None, place: str | None = None)
          + (f" (driest year {i['driest_year_rain_mm']:.0f}, wettest {i['wettest_year_rain_mm']:.0f})"
             if "driest_year_rain_mm" in i else "")),
         ("Warm-season rain", f"{i.get('warm_season_rain_mm'):.0f} mm"),
+        ("Evaporative demand (ET0)", f"{i['annual_et0_mm']:,.0f} mm a year (rain {i.get('annual_rain_mm'):,.0f} mm)"
+         if i.get("annual_et0_mm") is not None else None),
         ("Frost-free days", i.get("frost_free_days")),
         ("Coldest night (yearly avg)", f"{i['coldest_night_c']} degC" if "coldest_night_c" in i else None),
         ("Heat-stress days >32 degC", i.get("heat_days_per_year")),

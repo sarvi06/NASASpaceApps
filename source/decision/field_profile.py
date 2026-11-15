@@ -3,6 +3,7 @@
   NASA POWER daily climate -> monthly_climatology()       12-month climate the crop scoring uses
                            -> climate_profile()           per-year summary (frost, heat, heavy rain)
                            -> climate_insights()          trends and plain numbers for the report
+                           -> water.reference_et_monthly() how hard the air pulls water from crops
   SSURGO soil + location   -> site_profile()              pH, texture/drainage/depth/salinity/fertility
   CropScape crop history   -> crop_history_to_ecocrop()   crop names -> EcoCrop scientific names
                            -> detect_current_rotation()   e.g. corn <-> soybeans
@@ -20,6 +21,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
+
+from . import water
 
 HEAT_STRESS_C = 32     # daily max above this = heat-stress day
 TREND_P_MAX = 0.1      # a yearly trend is reported only if its chance-probability is below this
@@ -453,7 +456,7 @@ class FieldProfile:
     end_date: str
     elevation_m: float | None
     climate_daily: pd.DataFrame          # NASA POWER, one row per day
-    climate_monthly: pd.DataFrame        # 12 rows: tmean, tmax, tmin_ext, precip, wetness
+    climate_monthly: pd.DataFrame        # 12 rows: tmean, tmax, tmin_ext, precip, wetness, et0
     climate_yearly: pd.DataFrame         # one row per full year + mean row
     soil: pd.DataFrame                   # SSURGO components (empty outside the US)
     site: dict | None                    # dominant soil in EcoCrop terms (None outside the US)
@@ -484,6 +487,12 @@ def build_field_profile(lat, lon, start_date, end_date, climate_daily, soil=None
         else pd.DataFrame(columns=["year", "cdl_code", "crop", "error", "scientificname"])
     elevation = climate_daily.attrs.get("elevation_m")
     monthly = monthly_climatology(climate_daily)
+    et0 = water.reference_et_monthly(climate_daily, lat, elevation)
+    if et0 is not None:          # needs humidity, sunlight and wind; older saved tables may lack them
+        monthly["et0"] = et0
+    insights = climate_insights(climate_daily, monthly, smap)
+    if et0 is not None:
+        insights["annual_et0_mm"] = round(sum(et0), 0)
     if current_rotation is None:
         current_rotation = detect_current_rotation(history)
         if current_rotation is not None:
@@ -494,7 +503,7 @@ def build_field_profile(lat, lon, start_date, end_date, climate_daily, soil=None
         climate_yearly=climate_profile(climate_daily), soil=soil,
         site=site_profile(soil, lat, lon, elevation), crop_history=history,
         current_rotation=current_rotation,
-        insights=climate_insights(climate_daily, monthly, smap), soil_moisture=smap,
+        insights=insights, soil_moisture=smap,
     )
 
 

@@ -185,6 +185,7 @@ front end / demo.py  ->  backend.recommend_after_crop() / recommend_around_crops
 | `source/decision/data/faostat_to_ecocrop.csv` | Name table between FAOSTAT crop items and EcoCrop plants |
 | `source/decision/suitability.py` | Scores each crop for each planting month (harvest or cover crop); first cut of the crop list by a rank it is given |
 | `source/decision/sequence.py` | What can follow what: banned sequences, and a 0-1 score for each crop hand-over |
+| `source/decision/water.py` | Water the air draws from crops each month (FAO-56 ET0 from NASA POWER) and the share of a crop's need that rain covers |
 | `source/decision/rotations.py` | Rotation search, report card, farmer priorities, top-3 picking, where to start after the last crop, current rotation |
 | `source/decision/report.py` | Plain-English explanations, glossary, text report |
 
@@ -221,7 +222,7 @@ SMAP needs a free account from https://urs.earthdata.nasa.gov/. Set the `EARTHDA
 | nitrogen | Legumes in the rotation (cover and forage legumes count fully, grain legumes half) |
 | diversity | Number of plant families, which breaks pest and disease cycles |
 | sequence | How well each harvest crop follows the crop before it (after a legume is best; same family is worst), including the crop the field grew last |
-| water | Crops' rainfall needs compared with the field's rainfall (allowing for a falling trend) |
+| water | Share of each harvest crop's water need, over its own growing months, that rain supplies (allowing for a falling rain trend); falls back to EcoCrop rainfall needs vs yearly rain if NASA POWER humidity, sunlight or wind are missing |
 | income | The rotation's trusted income per hectare per year against the country's typical hectare (0.5 = typical, 1 = ten times typical) |
 | market | How widely the rotation's harvest crops are grown in the field's country (share of harvested area, log scale) |
 
@@ -229,6 +230,13 @@ The overall score is a weighted sum of these, with weights set by the farmer's p
 rules: no two harvest crops from the same family back to back; a cover crop is never followed by its
 own family; one harvest crop a year where summers are short (two where 8+ months are warm); every
 must-grow crop is in the rotation.
+
+**Water.** A crop's water need comes from the reference evapotranspiration (ET0), the water the
+air draws from a crop, worked out each day from NASA POWER temperature, humidity, sunlight and wind
+with the FAO-56 Penman-Monteith method (`source/decision/water.py`). It is lower while the crop
+emerges and ripens, and 80% of the rain in the same months is counted as reaching the roots. Water
+already stored in the soil is left out on purpose, so the score still tells a thirsty summer crop
+from one that grows through the cool, damp months.
 
 **Other weather.** Rotations are scored on the average year, so each rotation shown (and the
 current one) is also checked two ways, for display only (`source/decision/resilience.py`; the

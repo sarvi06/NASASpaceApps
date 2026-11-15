@@ -16,6 +16,7 @@ Simplifications:
     overwinters is tested against one year's autumn and the same year's spring.
   - Every crop keeps its planting month; a farmer would shift planting dates in a bad year.
   - The hotter/drier case shifts every month by the same amount; soil is unchanged.
+  - Evaporative demand (ET0) is held constant in the hotter case; only fit is re-scored here.
 """
 
 from __future__ import annotations

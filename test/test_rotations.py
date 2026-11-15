@@ -190,6 +190,26 @@ def test_previous_crop_sets_the_start_and_counts_in_the_ranking(iowa_search, cro
     assert changed
 
 
+def test_water_is_the_rain_share_of_the_harvest_crops(iowa_search):
+    from dataclasses import replace
+
+    from conftest import IOWA_ET0
+    from decision.water import rain_share
+    clim, *_, found = iowa_search
+    rot = found[0]
+    # without ET0: the EcoCrop fallback (yearly rain vs each crop's rain need)
+    old = [R._ecocrop_water_score(s.crop, clim.annual_rain) for s in rot.harvests]
+    assert rot.card["water"] == pytest.approx(sum(old) / len(old))
+    # with ET0: rain over each crop's own season vs its water need there
+    wet = replace(clim, et0=list(IOWA_ET0))
+    shares = [rain_share(s.start, s.months, IOWA_ET0, clim.precip) for s in rot.harvests]
+    assert R.score_card(rot, wet)["water"] == pytest.approx(sum(shares) / len(shares))
+    falling = {"rain_trend_mm_per_decade": -100}                     # plan for less rain
+    scale = R.expected_rain(wet, falling) / wet.annual_rain
+    shares = [rain_share(s.start, s.months, IOWA_ET0, clim.precip, scale) for s in rot.harvests]
+    assert R.score_card(rot, wet, insights=falling)["water"] == pytest.approx(sum(shares) / len(shares))
+
+
 def test_calendar_grid(iowa_search):
     *_, found = iowa_search
     grid = R.calendar_grid(found[0])

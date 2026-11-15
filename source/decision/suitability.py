@@ -51,14 +51,17 @@ class Climate:
     tmean: list[float]      # mean daily temperature per month (degC)
     tmin_ext: list[float]   # typical coldest night per month (degC)
     precip: list[float]     # typical monthly rainfall (mm)
+    et0: list[float] | None = None   # reference evapotranspiration per month (mm), water.py; None = unknown
 
     @classmethod
     def from_monthly(cls, df: pd.DataFrame) -> "Climate":
-        """From field_profile.monthly_climatology() output (month, tmean, tmin_ext, precip)."""
+        """From field_profile.monthly_climatology() output (month, tmean, tmin_ext, precip,
+        and et0 when build_field_profile() could work it out)."""
         df = df.sort_values("month")
         if len(df) != 12:
             raise ValueError("monthly climate must have exactly 12 rows")
-        return cls(df["tmean"].tolist(), df["tmin_ext"].tolist(), df["precip"].tolist())
+        et0 = df["et0"].tolist() if "et0" in df and df["et0"].notna().all() else None
+        return cls(df["tmean"].tolist(), df["tmin_ext"].tolist(), df["precip"].tolist(), et0)
 
     @property
     def annual_rain(self) -> float:

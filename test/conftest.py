@@ -20,6 +20,8 @@ from decision.suitability import Climate
 IOWA_TMEAN = [-6.3, -4.2, 3.2, 9.3, 16.5, 22.8, 24.4, 23.3, 20.0, 11.2, 3.4, -2.4]
 IOWA_TMIN_EXT = [-23.8, -19.7, -11.5, -4.8, 2.4, 9.9, 13.2, 11.9, 6.4, -3.2, -9.5, -16.6]
 IOWA_PRECIP = [32, 25, 52, 63, 113, 111, 88, 100, 85, 72, 40, 42]
+# Rough typical reference evapotranspiration (ET0, mm per month) for central Iowa.
+IOWA_ET0 = [15, 25, 50, 90, 125, 150, 160, 135, 95, 60, 25, 15]
 
 
 @pytest.fixture

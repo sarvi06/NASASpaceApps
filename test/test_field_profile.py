@@ -145,3 +145,13 @@ def test_build_field_profile_detects_current_rotation():
     assert fp.current_rotation["source"] == "USDA CropScape"
     assert fp.elevation_m == 310.0 and fp.site["ph"] == 6.2
     assert fp.to_dict()["insights"]["annual_rain_mm"] > 0
+
+
+def test_build_field_profile_adds_evaporative_demand():
+    fp = build_field_profile(42.065, -93.73, "2015-01-01", "2024-12-31", fake_power_daily())
+    assert fp.climate_monthly["et0"].notna().sum() == 12
+    assert fp.insights["annual_et0_mm"] == round(fp.climate_monthly["et0"].sum(), 0)
+    assert all("et0" in row for row in fp.to_dict()["climate_monthly"])
+    no_wind = build_field_profile(42.065, -93.73, "2015-01-01", "2024-12-31",
+                                  fake_power_daily().drop(columns="WS2M"))
+    assert "et0" not in no_wind.climate_monthly and "annual_et0_mm" not in no_wind.insights
