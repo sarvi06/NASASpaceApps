@@ -48,7 +48,11 @@ Priorities: `balanced` (default), `save_water`, `build_soil`, `extra_income`.
   - **Best rotations** - the best rotations for the plot, following its last crop if it is filled in.
   - **Keep certain crops** - one or two crops you want to grow; rotations are built around them.
   - **Stay within a budget** - what you can spend on growing costs a year for the whole plot;
-    needs the cost per hectare of at least one crop you know.
+    needs the cost per acre of at least one crop you know.
+- **Units:** the app takes and shows US farm units: plot size in acres, prices per bushel, yields
+  in bushels per acre and costs per acre. Crops not sold by the bushel (potato, tomato and most
+  vegetables) use hundredweight (cwt, 100 lb). `source/gui/units.py` converts them to the metric
+  units the back end takes.
 - **Asking:** each tab asks its own question and "What matters most to you?" (a balance, saving
   water, building soil health, earning more). Your own prices, yields and costs, and the weather
   years, rotation length and irrigation, are folded away underneath. Press **Find rotations**;
@@ -226,12 +230,21 @@ rules: no two harvest crops from the same family back to back; a cover crop is n
 own family; one harvest crop a year where summers are short (two where 8+ months are warm); every
 must-grow crop is in the rotation.
 
+**Other weather.** Rotations are scored on the average year, so each rotation shown (and the
+current one) is also checked two ways, for display only (`source/decision/resilience.py`; the
+ranking does not change): would every harvest crop have worked in the actual weather of each year
+on record ("suited the weather in 9 of the last 10 years (weak: 2020, corn limited by rain)"), and
+how the climate and soil fit changes if it turns 2 degC warmer with 20% less rain. Both appear in
+the report's benefits or risks and in `to_dict()["recommended_rotations"][i]["resilience"]`.
+
 Which crops are considered: every EcoCrop plant except trees, plants that are only timber,
 ornamental, medicinal or weeds, and perennials that cannot sit in a 1-4 year rotation. Harvest
 crops must also have something known to sell them for (a FAOSTAT price, here or as a world
 estimate, or the farmer's own), be a crop the field already grows, or be a must-grow crop. A crop
-not grown in the country can be suggested, but starts with a market score of 0. Cover crops are
-the plants EcoCrop labels "cover crop".
+grown on less than about 0.3% of the country's cropland (market score below 0.5) is only suggested
+if the farmer adds it as must-grow or enters their own price or cost for it. Cover crops are the
+plants EcoCrop labels "cover crop", except perennials and root crops, plants with no common name,
+and plants EcoCrop does not list as grown as far from the equator as the field.
 
 ## Tests
 

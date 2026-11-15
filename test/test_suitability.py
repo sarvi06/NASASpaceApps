@@ -1,5 +1,7 @@
 """Tests for decision/suitability.py on an Iowa-like field."""
 
+from dataclasses import replace
+
 import pytest
 
 from decision.suitability import (MONTHS, Climate, best_single_crops, build_slots, score_cover,
@@ -27,6 +29,14 @@ def test_corn_and_soybean_suit_iowa_in_summer(crops, iowa_climate, iowa_site):
         assert slot.score >= 0.6, (sci, slot.score, slot.limiter)
         assert MONTHS[slot.start] in ("Apr", "May", "Jun")
         assert slot.months >= 3
+
+
+def test_corn_and_soybean_are_best_planted_in_may_in_iowa(crops, iowa_climate, iowa_site):
+    for sci in (CORN, SOY):
+        scores = [(s.score if (s := score_harvest(crops[sci], m, iowa_climate, iowa_site)) else 0)
+                  for m in range(12)]
+        assert scores.index(max(scores)) == 4, (sci, scores)    # May; index() takes the earliest tie
+    assert (s := score_harvest(crops[CORN], 3, iowa_climate, iowa_site)) is None or s.score == 0
 
 
 def test_corn_cannot_grow_through_winter(crops, iowa_climate):
@@ -58,6 +68,26 @@ def test_frost_tender_cover_is_killed_but_still_counts(crops, iowa_climate):
     assert buckwheat.can_cover and buckwheat.hardy_to is None
     cover = score_cover(buckwheat, 7, 6, iowa_climate)                              # Aug-Jan
     assert cover is not None and any("residue" in e for e in cover.evidence)
+    assert cover.covered < cover.months                  # the residue only protects the soil for a while
+
+
+def test_hardy_cover_that_overwinters_covers_its_whole_slot(crops, iowa_climate, iowa_site):
+    rye = score_cover(crops["Secale cereale"], 8, 8, iowa_climate, iowa_site)
+    assert rye.covered == rye.months
+
+
+def test_cover_crop_is_not_offered_beyond_its_latitude_limit(crops, iowa_climate, iowa_site):
+    sunn_hemp = crops["Crotalaria juncea"]                                          # grown to 30 deg
+    assert sunn_hemp.lat_limit < iowa_site["lat"]
+    assert score_cover(sunn_hemp, 5, 4, iowa_climate) is not None                   # no location given
+    assert score_cover(sunn_hemp, 5, 4, iowa_climate, iowa_site) is None            # Iowa is too far north
+    south = {**iowa_site, "lat": -iowa_site["lat"]}                                 # same distance south
+    assert score_cover(sunn_hemp, 5, 4, iowa_climate, south) is None
+    rye = crops["Secale cereale"]                                                   # grown to 70 deg
+    assert score_cover(rye, 8, 8, iowa_climate, iowa_site) is not None
+    corn = crops[CORN]                                                              # harvest crops: not cut
+    near_limit = score_harvest(replace(corn, lat_limit=30), 4, iowa_climate, iowa_site)
+    assert near_limit.score == score_harvest(corn, 4, iowa_climate, iowa_site).score > 0
 
 
 def test_irrigation_never_lowers_a_score(crops, iowa_climate):

@@ -7,7 +7,7 @@ import pytest
 from conftest import corn_soy_history, fake_power_daily, nicollet_soil
 from decision.field_profile import (
     DEP_DEEP, DEP_MEDIUM, DEP_SHALLOW, DRA_EXCESSIVE, DRA_POOR, DRA_WELL,
-    SAL_HIGH, SAL_LOW, SAL_MEDIUM, TEXT_HEAVY, TEXT_LIGHT, TEXT_MEDIUM, TEXT_ORGANIC,
+    _trend_per_decade, SAL_HIGH, SAL_LOW, SAL_MEDIUM, TEXT_HEAVY, TEXT_LIGHT, TEXT_MEDIUM, TEXT_ORGANIC,
     build_field_profile, climate_insights, climate_profile, depth_to_ecocrop,
     detect_current_rotation, drainage_to_ecocrop, frost_free_days, monthly_climatology,
     salinity_to_ecocrop, site_profile, texture_to_ecocrop, usda_texture_class,
@@ -127,6 +127,15 @@ def test_climate_insights_flags_falling_rain():
     assert insights["rain_trend_mm_per_decade"] < 0
     assert insights["full_years"] == 10
     assert insights["warm_season_months"] == [5, 6, 7, 8, 9]
+
+
+def test_trend_ignores_noise_and_keeps_real_trends():
+    noisy = pd.Series([500, 900, 450, 850, 600, 300, 800, 400, 700, 350],
+                      index=range(2015, 2025), dtype=float)
+    assert _trend_per_decade(noisy) is None
+    rising = pd.Series([400 + 20 * i + (i % 2) * 5 for i in range(10)],
+                       index=range(2015, 2025), dtype=float)
+    assert _trend_per_decade(rising) > 0
 
 
 def test_build_field_profile_detects_current_rotation():

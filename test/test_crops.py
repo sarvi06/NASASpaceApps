@@ -39,6 +39,26 @@ def test_roles_come_from_ecocrop_categories():
     assert crop_roles(row([]), sold=True) == {"cash"}
 
 
+def test_cover_role_needs_a_plant_that_can_be_ended_after_a_few_months():
+    assert crop_roles(row(["cover crop"], lispa=["annual"])) == {"cover"}               # e.g. buckwheat
+    assert crop_roles(row(["cover crop"], lispa=["annual", "perennial"])) == {"cover"}  # e.g. clover
+    assert "cover" not in crop_roles(row(["forage/pasture", "cover crop"], lispa=["perennial"]))  # vetiver
+    assert crop_roles(row(["roots/tubers", "cover crop"])) == {"cash"}                  # e.g. leafcup
+
+
+def test_nameless_unsold_plants_are_dropped_and_latitude_is_read():
+    plant = {"scientificname": "Test plant", "famname": "Fabaceae", "cat": ["cover crop"],
+             "lispa": ["annual"], "tmin": 5, "tmax": 30, "topmn": 15, "topmx": 25,
+             "gmin": 90, "gmax": 120, "latmn": 30, "latmx": 45}
+    assert build_crops(pd.DataFrame([plant])) == {}                         # no common name
+    assert build_crops(pd.DataFrame([plant]), sold={"Test plant": "test"})  # sold: kept
+    assert build_crops(pd.DataFrame([plant]), extra=["Test plant"])         # forced: kept
+    named = build_crops(pd.DataFrame([{**plant, "comname": ["test vetch"]}]))["Test plant"]
+    assert named.name == "test vetch" and named.can_cover and named.lat_limit == 45
+    unknown = build_crops(pd.DataFrame([{**plant, "comname": ["x"], "latmn": None, "latmx": None}]))
+    assert unknown["Test plant"].lat_limit is None
+
+
 def test_real_list_is_wide_and_has_no_trees(crops):
     assert len(crops) > 300
     for name in ("larch", "tea", "apple", "rose", "opium poppy"):
@@ -63,7 +83,13 @@ def test_roles_and_hardiness_of_known_crops(crops):
     assert crops["Secale cereale"].hardy_to <= -15                 # overwinters
     assert crops["Zea mays ssp. mays"].hardy_to is None            # does not
     assert not crops["Zea mays ssp. mays"].can_cover
-    assert sum(c.can_cover for c in crops.values()) >= 20
+    assert sum(c.can_cover for c in crops.values()) >= 15          # short-lived covers only
+    for c in crops.values():
+        if c.can_cover:
+            assert c.name != c.sci, c.sci                           # every cover has a common name
+    assert not find_crop("leafcup", crops).can_cover               # a root crop
+    assert "Stachys affinis" not in crops                          # perennial tuber, no common name
+    assert crops["Secale cereale"].lat_limit == 70
 
 
 def test_crop_values_are_sane(crops):

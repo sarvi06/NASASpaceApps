@@ -4,9 +4,10 @@
     economy.income(crop)    US dollars per hectare at an average yield (0 if unknown)
     economy.trusted_income(crop)   the part of that income the ranking counts (see below)
     economy.value(crop)     0-1: trusted income against the country's typical hectare
-    economy.market(crop)    0-1: how widely the crop is grown in the country
+    economy.market(crop)    0-1: how widely the crop is grown in the country (1 with the farmer's price)
     economy.score(dollars)  0-1 for any dollars-per-hectare figure (e.g. a whole rotation's)
-    economy.rank(slot)      first-cut ranking of a crop option: suitability x (value and market)
+    economy.rank(slot)      first-cut ranking of a crop option: suitability x (value and market);
+                            0 for a crop grown too little to suggest (MIN_MARKET_TO_SUGGEST)
 
 Where the numbers come from (data_pullers/FAOSTAT_pull.py):
   income  = yield (t/ha) x price paid to farmers (USD/t), national 5-year averages. The
@@ -46,6 +47,10 @@ _ITEM_OF = {sci: item for item, species in FAOSTAT_TO_ECOCROP.items() for sci in
 NEUTRAL = 0.5                  # every score when there is no price data at all
 MARKET_FULL_SHARE = 0.10       # 10% of the country's harvested area or more -> market 1.0
 MARKET_ZERO_SHARE = 0.0001     # 0.01% or less -> market 0.0 (log scale in between)
+# Crops below this market score (about 0.3% of the country's harvested area) are not suggested
+# unless the farmer asks for them (must-grow, own price or own cost): a crop so few farmers grow
+# usually has costs or buyer limits that FAOSTAT does not show, however high its income looks.
+MIN_MARKET_TO_SUGGEST = 0.5
 MAX_ASSUMED_COST_SHARE = 0.95  # cap on the cost share carried over to crops without a cost
 MIN_ITEMS_FOR_PRICE_LEVEL = 3  # crops needed to compare a country's prices with the world's
 COST_ENTERED = "entered by you"
@@ -166,8 +171,15 @@ class Economy:
         return _clamp((math.log10(priced.area_share) - low) / (high - low))
 
     def rank(self, slot: Slot) -> float:
-        """First-cut ranking of a crop option; 0 = nothing known to sell it for."""
-        return slot.score * (self.value(slot.crop) + self.market(slot.crop)) / 2
+        """First-cut ranking of a crop option; 0 = nothing known to sell it for, or grown too
+        little in the country to suggest (unless the farmer entered its cost; a crop with the
+        farmer's own price already has market 1). With no price data, market is NEUTRAL and
+        the ranking is suitability alone."""
+        market = self.market(slot.crop)
+        priced = self.get(slot.crop)
+        if market < MIN_MARKET_TO_SUGGEST and not (priced and priced.cost_source == COST_ENTERED):
+            return 0.0
+        return slot.score * (self.value(slot.crop) + market) / 2
 
     def table(self, crops: dict[str, Crop]) -> list[dict]:
         """Every priced crop as a JSON-safe row, highest income first."""

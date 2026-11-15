@@ -15,7 +15,11 @@ DISCLAIMER = ("This tool highlights patterns and possibilities from NASA and USD
               "an agronomist or extension service before acting on it.")
 
 WIDELY_GROWN = 0.8     # market score at or above this is worth naming as a benefit
+ACRES_PER_HA = 2.471   # the app covers the USA only, so money is given per acre first
 RARELY_GROWN = 0.34    # market score below this (about 0.1% of the country's cropland) is a gap
+RELIABLE_SHARE = 0.8   # suiting at least this share of the years on record counts as a benefit
+FIT_DROP_WORTH_NAMING = 0.02   # a smaller fall in fit in the hotter, drier case = it holds up
+MAX_WEAK_YEARS = 3     # bad years named in the reliability sentence
 
 GLOSSARY = {
     "suitability": "0-1 score for how well the field's climate and soil match a crop's needs "
@@ -44,6 +48,11 @@ GLOSSARY = {
 }
 
 
+def _per_area(usd_per_ha: float) -> str:
+    """Money per acre first (US farmers think in acres), with the hectare figure in brackets."""
+    return f"${usd_per_ha / ACRES_PER_HA:,.0f} per acre (${usd_per_ha:,.0f} per hectare)"
+
+
 def _names(slots) -> str:
     names = list(dict.fromkeys(s.crop.name for s in slots))
     return ", ".join(names[:-1]) + (" and " if len(names) > 1 else "") + names[-1] if names else ""
@@ -55,6 +64,50 @@ def _verb(slots, singular: str, plural: str) -> str:
 
 def _covered_per_year(rot: Rotation) -> float:
     return len(rot.covered_months()) / rot.years
+
+
+def _held_back(crop: str, limited_by: str) -> str:
+    return f"{crop} could not grow" if limited_by == "cannot grow" else f"{crop} limited by {limited_by}"
+
+
+def _reliability(res: dict) -> tuple[str, bool] | None:
+    """(sentence, is a benefit) for how many years on record the rotation would have suited."""
+    n, ok, bad = res.get("years_checked", 0), res.get("years_ok", 0), res.get("bad_years", [])
+    if not n:
+        return None
+    if ok == n:
+        span = "the one full year on record" if n == 1 else f"every one of the last {n} years on record"
+        return (f"Would have suited the weather in {span} (NASA POWER), not just the average "
+                f"year.", True)
+    weak = "; ".join(f"{b['year']}, {_held_back(b['crop'], b['limited_by'])}"
+                     for b in bad[:MAX_WEAK_YEARS])
+    if len(bad) > MAX_WEAK_YEARS:
+        weak += f"; and {len(bad) - MAX_WEAK_YEARS} more"
+    if ok / n >= RELIABLE_SHARE:
+        return f"Would have suited the weather in {ok} of the last {n} years on record (weak: {weak}).", True
+    return (f"Would have suited the weather in only {ok} of the last {n} years on record: in the "
+            f"others a harvest crop would have done poorly (weak: {weak}). Expect some bad years "
+            f"and plan for them.", False)
+
+
+def _hotter_drier(res: dict) -> tuple[str, bool] | None:
+    """(sentence, is a benefit) for the rotation re-scored in a hotter, drier climate."""
+    sc = res.get("scenario")
+    if not sc:
+        return None
+    now, then = sc["fit_now"], sc["fit"]
+    if now - then < FIT_DROP_WORTH_NAMING:
+        change = (f"stays at about {now:.0%}" if f"{now:.0%}" == f"{then:.0%}"
+                  else f"would be {then:.0%} against {now:.0%} now")
+        return f"Holds up in a hotter, drier climate ({sc['name']}): the climate and soil fit {change}.", True
+    hit = sc.get("weakest")
+    if hit:
+        why = "it could not grow" if hit["limited_by"] == "cannot grow" else f"limited by {hit['limited_by']}"
+        hardest = f"; {hit['crop']} is hit hardest ({why})"
+    else:                        # no harvest crop loses, so the drop is in the cover crops
+        hardest = "; the cover crops suffer, not the harvest crops"
+    return (f"In a hotter, drier climate ({sc['name']}), the climate and soil fit drops from "
+            f"{now:.0%} to {then:.0%}{hardest}.", False)
 
 
 def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
@@ -114,12 +167,12 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
     if priced:
         typical = (f"; the typical hectare in {economy.country or 'this country'} earns about "
                    f"${economy.typical_income:,.0f}" if economy.typical_income else "")
-        benefits.append(f"Estimated earnings of about ${rot.income_usd_ha:,.0f} per hectare per year "
+        benefits.append(f"Estimated earnings of about {_per_area(rot.income_usd_ha)} per year "
                         f"from {_names(priced)} (average yields scaled by how well each crop suits "
                         f"the field{typical}; see Money lines above).")
         if rot.trusted_income_usd_ha < 0.9 * rot.income_usd_ha:
-            gaps_first = (f"Only about ${rot.trusted_income_usd_ha:,.0f} of the "
-                          f"${rot.income_usd_ha:,.0f} per hectare per year is counted in the score: "
+            gaps_first = (f"Only about {_per_area(rot.trusted_income_usd_ha)} of the "
+                          f"{_per_area(rot.income_usd_ha)} per year is counted in the score: "
                           f"income far above the typical hectare from a crop few farmers here grow "
                           f"usually means high costs or few buyers that FAOSTAT does not show. Enter "
                           f"your own price or cost for a crop to have its income counted in full.")
@@ -127,7 +180,7 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
         yearly = rot.cost_usd_ha * budget["plot_size_ha"]
         verdict = "within" if rot.cost_usd_ha <= budget["max_cost_usd_ha"] else "OVER"
         benefits.append(f"Growing costs of about ${yearly:,.0f} a year for the whole plot "
-                        f"({budget['plot_size_ha']:g} ha at ${rot.cost_usd_ha:,.0f} per hectare): "
+                        f"({budget['plot_size_ha']:g} ha at {_per_area(rot.cost_usd_ha)}): "
                         f"{verdict} your budget of ${budget['budget_usd']:,.0f}.")
     established = [s for s in priced if economy.market(s.crop) >= WIDELY_GROWN]
     if established:
@@ -142,7 +195,10 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
     if baseline and card["water"] > base_card.get("water", 0) + 0.03:
         benefits.append("Lower overall water demand than the current rotation (EcoCrop rainfall "
                         "needs vs NASA POWER rainfall).")
-    forage = [s for s in rot.slots if "forage" in s.crop.roles]
+    # EcoCrop also tags some food crops (e.g. tomato) as forage; only name crops that are
+    # grown as a cover crop or are not cash crops, or the sentence reads oddly.
+    forage = [s for s in rot.slots if "forage" in s.crop.roles
+              and (s.use == "cover" or "cash" not in s.crop.roles)]
     if forage:
         benefits.append(f"{_names(forage)} can also be grazed or cut for forage/hay.")
 
@@ -210,6 +266,11 @@ def explain(rot: Rotation, field, baseline: Rotation | None, weights: dict,
             nxt = rot.placed[(i + 1) % len(rot.placed)][1]
             risks.append(f"{s.crop.name} cover must be ended in good time before planting "
                          f"{nxt.crop.name}; in a dry spring it can use soil water the next crop needs.")
+    if rot.resilience:
+        for found in (_reliability(rot.resilience), _hotter_drier(rot.resilience)):
+            if found:
+                sentence, is_benefit = found
+                (benefits if is_benefit else risks).append(sentence)
     risks.append("Timings are monthly; actual planting and harvest dates depend on the season, "
                  "varieties and machinery - plan them locally.")
 
@@ -277,6 +338,11 @@ def _rotation_block(rot: Rotation, title: str) -> list[str]:
     lines = [title, "-" * len(title), rot.name, "", calendar_grid(rot), "",
              "Report card (0-1): " + ", ".join(f"{CARD[k]} {v:.2f}" for k, v in rot.card.items())
              + f"  ->  overall {rot.overall:.2f}"]
+    res = rot.resilience
+    if res and res.get("years_checked"):
+        sc = res["scenario"]
+        lines.append(f"Other weather: suited {res['years_ok']} of {res['years_checked']} years on "
+                     f"record; {sc['name']}: fit {sc['fit_now']:.2f} -> {sc['fit']:.2f}")
     if not e:
         return lines + [""]
     lines += ["", "Why: " + e["why"], "", "Evidence:"] + [f"  {x}" for x in e["evidence"]]
@@ -295,13 +361,15 @@ def text_report(rec) -> str:
         lines.append("Must grow (in every option): " + ", ".join(rec.must_grow))
     if rec.budget:
         lines.append(f"Budget: ${rec.budget['budget_usd']:,.0f} a year for {rec.budget['plot_size_ha']:g} ha"
-                     f" = at most ${rec.budget['max_cost_usd_ha']:,.0f} per hectare a year")
+                     f" = at most {_per_area(rec.budget['max_cost_usd_ha'])} a year")
     economy = rec.economy
     if economy.crops:
         lines.append(f"Prices and yields: {len(economy.crops)} crops priced"
                      + (f", FAOSTAT national averages for {economy.country}" if economy.country else "")
                      + (f"; the typical hectare there earns about ${economy.typical_income:,.0f}"
                         if economy.typical_income else ""))
+        lines.append("Crops grown on less than about 0.3% of the country's cropland are only "
+                     "suggested if you add them as must-grow or enter your own price or cost")
         if economy.cost_share is not None:
             lines.append(f"Costs: yours where entered; other crops assumed at {economy.cost_share:.0%} "
                          f"of income, the share in the costs you entered")

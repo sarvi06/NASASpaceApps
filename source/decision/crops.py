@@ -31,6 +31,11 @@ CASH_CATEGORIES = {"cereals & pseudocereals", "pulses (grain legumes)", "roots/t
 FORAGE_CATEGORY, COVER_CATEGORY = "forage/pasture", "cover crop"
 # Perennials only fit a 1-4 year rotation if they are cut, ended or dug up within it.
 PERENNIALS_ALLOWED = {FORAGE_CATEGORY, COVER_CATEGORY, "roots/tubers"}
+# A cover crop sits in the field for a few months between harvests. EcoCrop also tags as
+# "cover crop" perennials (slow to establish, hard to end) and root crops (tubers left in the
+# ground regrow as weeds): neither works as a short cover.
+PERENNIAL_ONLY = frozenset({"perennial"})       # life span (column `lispa`)
+NOT_COVER_CATEGORIES = {"roots/tubers"}
 
 HARDY_BELOW_C = -4      # EcoCrop "killing temperature at rest" at or below this = overwinters
 
@@ -75,6 +80,7 @@ class Crop:
     fer_opt: str | None
     fer_abs: str | None
     other_names: frozenset = frozenset()    # every EcoCrop common name, lower case
+    lat_limit: float | None = None          # furthest latitude (N or S) it is grown at; None = unknown
 
     @property
     def legume(self) -> bool:
@@ -162,16 +168,22 @@ def is_rotation_crop(row: Mapping, sold: bool = False) -> bool:
 
 
 def crop_roles(row: Mapping, sold: bool = False) -> frozenset:
-    """What the plant can be grown for, from its EcoCrop categories."""
+    """What the plant can be grown for, from its EcoCrop categories. A "cover crop" must also
+    be one that can be ended after a few months (_is_short_cover)."""
     categories = _labels(row.get("cat"))
     roles = set()
     if sold or categories & CASH_CATEGORIES:
         roles.add("cash")
     if FORAGE_CATEGORY in categories:
         roles.add("forage")
-    if COVER_CATEGORY in categories:
+    if COVER_CATEGORY in categories and _is_short_cover(row, categories):
         roles.add("cover")
     return frozenset(roles)
+
+
+def _is_short_cover(row: Mapping, categories: frozenset) -> bool:
+    """Can this "cover crop" be sown after a harvest and ended a few months later?"""
+    return _labels(row.get("lispa")) != PERENNIAL_ONLY and not categories & NOT_COVER_CATEGORIES
 
 
 # --------------------------------------------------------------------------------------
@@ -216,8 +228,11 @@ def _make_crop(r: Mapping, name: str | None = None, forced: bool = False) -> Cro
     roles = crop_roles(r, sold=name is not None) or (frozenset({"cash"}) if forced else frozenset())
     if not roles:
         return None
-    rest_kill = _num(r.get("ktmpr"))
     common = _items(r.get("comname"))
+    if not common and name is None and not forced:
+        return None             # no everyday name and not sold: there is no seed market for it
+    rest_kill = _num(r.get("ktmpr"))
+    lat_limits = [x for x in (_num(r.get("latmn")), _num(r.get("latmx"))) if x is not None]
     return Crop(
         sci=sci, name=name or (str(common[0]).strip() if common else sci),
         family=_family(r.get("famname")), roles=roles,
@@ -234,6 +249,7 @@ def _make_crop(r: Mapping, name: str | None = None, forced: bool = False) -> Cro
         sal_opt=_first(r.get("sal")), sal_abs=_first(r.get("salr")),
         fer_opt=_first(r.get("fer")), fer_abs=_first(r.get("ferr")),
         other_names=frozenset(str(n).strip().lower() for n in common),
+        lat_limit=max(lat_limits) if lat_limits else None,
     )
 
 

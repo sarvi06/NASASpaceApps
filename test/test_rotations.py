@@ -3,8 +3,9 @@
 import pytest
 
 from decision import rotations as R
+from decision.economics import MIN_MARKET_TO_SUGGEST
 from decision.sequence import follow_score
-from decision.suitability import Climate, build_slots
+from decision.suitability import Climate, build_slots, score_cover
 
 CORN, SOY, OATS, BEAN = "Zea mays ssp. mays", "Glycine max", "Avena sativa", "Phaseolus vulgaris"
 
@@ -13,7 +14,7 @@ CORN, SOY, OATS, BEAN = "Zea mays ssp. mays", "Glycine max", "Avena sativa", "Ph
 def iowa_search(crops, economy):
     from conftest import IOWA_PRECIP, IOWA_TMEAN, IOWA_TMIN_EXT
     clim = Climate(IOWA_TMEAN, IOWA_TMIN_EXT, IOWA_PRECIP)
-    site = {"ph": 6.2, "text": "medium", "dra": "well (dry spells)", "dep": "deep (>>150 cm)",
+    site = {"lat": 42.065, "ph": 6.2, "text": "medium", "dra": "well (dry spells)", "dep": "deep (>>150 cm)",
             "sal": "low (<4 dS/m)", "fer": "high", "slope_pct": 2, "erodibility_k": 0.28}
     weights = R.resolve_priorities("balanced", site)
     familiar = {CORN, SOY}
@@ -77,6 +78,17 @@ def test_top_three_are_distinct_and_include_legumes(iowa_search):
         assert any(s.crop.legume for s in a.slots)
         for b in top[i + 1:]:
             assert R._overlap(a, b) < 1
+
+
+def test_top_three_hold_only_believable_crops(iowa_search, economy):
+    clim, site, weights, familiar, found = iowa_search
+    for r in R.pick_top(found, 3, familiar):
+        for s in r.covers:                                          # short-lived, grown this far north
+            assert s.crop.can_cover and (s.crop.lat_limit is None or s.crop.lat_limit >= site["lat"])
+        for s in r.harvests:                                        # widely grown, or already grown here
+            assert economy.market(s.crop) >= MIN_MARKET_TO_SUGGEST or s.crop.sci in familiar, s.crop.name
+        names = {s.crop.name for s in r.slots}
+        assert not names & {"tomato", "leafcup"}, r.name
 
 
 def test_income_score_uses_the_rotations_real_dollars_per_year(iowa_search, economy):
@@ -182,3 +194,13 @@ def test_calendar_grid(iowa_search):
     *_, found = iowa_search
     grid = R.calendar_grid(found[0])
     assert grid.count("\n  Y") == found[0].years and "Jan" in grid
+
+
+def test_a_killed_cover_leaves_the_soil_bare_after_its_residue(crops, iowa_search):
+    clim, site, weights, familiar, found = iowa_search
+    cover = score_cover(crops["Fagopyrum esculentum"], 7, 6, clim)           # Aug-Jan, killed by frost
+    assert cover.covered < cover.months
+    rot = R.Rotation(placed=((7, cover),), years=1)
+    assert rot.bare_months() == [m for m in range(12) if m not in range(7, 7 + cover.covered)]
+    assert len(rot.covered_months()) == cover.covered
+    assert R.score_card(rot, clim)["cover"] < cover.months / 12

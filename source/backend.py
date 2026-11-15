@@ -32,6 +32,8 @@ What happens inside:
   6. decision/rotations.py      -> search rotations, rate them, pick the top 3, score the current one,
                                    start each in the year that best follows the crop grown last
                                    (decision/sequence.py holds the "what can follow what" rules)
+     decision/resilience.py     -> how each rotation shown holds up in each year's weather and
+                                   in a hotter, drier climate (display only)
   7. decision/report.py         -> why / evidence / benefits / gaps / risks
 """
 
@@ -51,6 +53,7 @@ from decision import report
 from decision.crops import Crop, build_crops, find_crop
 from decision.economics import SOLD_CROPS, Economy, build_economy
 from decision.field_profile import CDL_TO_ECOCROP, FieldProfile, _json_safe, build_field_profile
+from decision.resilience import check, yearly_climates
 from decision.rotations import (CARD, PRIORITY_PRESETS, Rotation, baseline_rotation, pick_top,
                                 resolve_priorities, search_rotations)
 from decision.sequence import follow_score
@@ -304,6 +307,12 @@ def recommend(lat: float, lon: float, start_date, end_date, priorities="balanced
                                      fp.insights, economy)
         if baseline:
             baseline.strategy = "your current rotation"
+
+    # ---- how the rotations shown hold up in other weather (display only, scores unchanged) ----
+    say("Checking each rotation against every year's weather...")
+    yearly = yearly_climates(climate)
+    for rot in top + ([baseline] if baseline else []):
+        rot.resilience = check(rot, clim, yearly, fp.site, irrigated)
 
     # ---- 7. explanations ----
     for rot in top + ([baseline] if baseline else []):

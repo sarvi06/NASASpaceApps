@@ -22,7 +22,8 @@ import numpy as np
 import pandas as pd
 
 HEAT_STRESS_C = 32     # daily max above this = heat-stress day
-HEAVY_RAIN_MM = 25     # daily rain above this = heavy-rain day (erosion / waterlogging risk)
+TREND_P_MAX = 0.1      # a yearly trend is reported only if its chance-probability is below this
+HEAVY_RAIN_MM = 25    # daily rain above this = heavy-rain day (erosion / waterlogging risk)
 
 # --------------------------------------------------------------------------------------
 # EcoCrop's category labels (exact strings, typos included)
@@ -369,10 +370,30 @@ def detect_current_rotation(history: pd.DataFrame, max_years: int = 8) -> dict |
 # --------------------------------------------------------------------------------------
 # Insights (patterns the brief asks about: heat, frost, rain extremes, water trends)
 # --------------------------------------------------------------------------------------
+def _trend_p_value(values) -> float:
+    """How likely a pattern this strong is to be luck (small = a real trend).
+
+    It asks whether later years are higher (or lower) than earlier years more often than
+    chance would give (the Mann-Kendall test), and needs no extra library.
+    """
+    v = list(values)
+    n = len(v)
+    s = sum(int(v[j] > v[i]) - int(v[j] < v[i]) for i in range(n) for j in range(i + 1, n))
+    var = n * (n - 1) * (2 * n + 5) / 18
+    if s == 0 or var == 0:
+        return 1.0
+    z = (s - 1 if s > 0 else s + 1) / math.sqrt(var)
+    return 2 * (1 - 0.5 * (1 + math.erf(abs(z) / math.sqrt(2))))
+
+
 def _trend_per_decade(series: pd.Series) -> float | None:
-    """Least-squares slope of a yearly series, per 10 years (None if < 5 years)."""
+    """Least-squares slope of a yearly series, per 10 years.
+
+    None if there are under 5 years or the trend could easily be chance (p >= TREND_P_MAX),
+    so noisy years are not reported as a climate trend.
+    """
     s = series.dropna()
-    if len(s) < 5:
+    if len(s) < 5 or _trend_p_value(s.to_numpy(dtype=float)) >= TREND_P_MAX:
         return None
     years = s.index.astype(int)
     slope = np.polyfit(years, s.to_numpy(dtype=float), 1)[0]

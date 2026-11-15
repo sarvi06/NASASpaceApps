@@ -157,6 +157,20 @@ def test_rank_combines_suitability_value_and_market(crops, economy):
     assert economy.rank(corn) == pytest.approx(0.8 * (economy.value(crops[CORN]) + 1.0) / 2)
     assert economy.rank(slot(CORN, 0.4)) == pytest.approx(economy.rank(corn) / 2)
     assert economy.rank(slot(VETCH, 1.0)) == 0                      # nothing known to sell it for
+    rice = slot("Oryza sativa", 0.8)                                # 1.1 Mha: above the threshold
+    assert economy.market(rice.crop) >= E.MIN_MARKET_TO_SUGGEST and economy.rank(rice) > 0
+
+
+def test_rank_is_zero_for_crops_grown_too_little_unless_the_farmer_asks(crops, economy):
+    tomato, okra = (Slot(crops[sci], 4, 5, "harvest", 0.9, "temperature") for sci in (TOMATO, OKRA))
+    assert economy.market(crops[TOMATO]) < E.MIN_MARKET_TO_SUGGEST     # 0.1% of the area
+    assert economy.value(crops[TOMATO]) > economy.value(crops[CORN])   # earns well on paper...
+    assert economy.rank(tomato) == 0 and economy.rank(okra) == 0      # ...but is not suggested
+    sold = build(crops, tomato={"price": 120})                         # the farmer has a buyer
+    assert sold.market(crops[TOMATO]) == 1.0 and sold.rank(tomato) > 0
+    costed = build(crops, tomato={"cost": 4000})                       # the farmer knows its cost
+    assert costed.market(crops[TOMATO]) < E.MIN_MARKET_TO_SUGGEST and costed.rank(tomato) > 0
+    assert costed.rank(okra) == 0                                      # only the crop they costed
 
 
 def test_no_data_means_every_score_is_neutral(crops):
@@ -166,6 +180,8 @@ def test_no_data_means_every_score_is_neutral(crops):
         assert empty.value(crops[sci]) == empty.market(crops[sci]) == E.NEUTRAL
     assert empty.score(123) == E.NEUTRAL and empty.income(crops[CORN]) == 0
     assert E.Economy().value(crops[CORN]) == E.NEUTRAL
+    for sci in (CORN, VETCH):                                       # ranked by suitability alone
+        assert E.Economy().rank(Slot(crops[sci], 4, 5, "harvest", 0.8, "temperature")) == pytest.approx(0.4)
 
 
 def test_table_lists_priced_crops_highest_income_first(crops, economy):

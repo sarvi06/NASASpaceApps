@@ -34,6 +34,9 @@ def test_recommend_returns_three_options_and_current_rotation(offline):
     for rot in rec.rotations + [rec.baseline]:
         e = rot.explanation
         assert e["why"] and e["evidence"] and e["benefits"] and e["information_gaps"] and e["risks"]
+        assert rot.resilience["years_checked"] == 10                  # each year's weather checked
+        assert rot.resilience["scenario"]["fit_now"] == pytest.approx(rot.card["fit"], abs=1e-3)
+        assert "years on record" in " ".join(e["benefits"] + e["risks"])
     assert progress[0].startswith("Downloading NASA POWER") and progress[-1] == "Done."
     text = rec.to_text()
     assert "OPTION 3" in text and "YOUR CURRENT ROTATION" in text and "agronomist" in text
@@ -175,7 +178,8 @@ def test_income_comes_from_faostat_and_farmer_numbers_replace_it(offline):
     text = rec.to_text()
     assert "Money: about $" in text and "costs not included" in text and "typical hectare" in text
     for rot in rec.rotations:                                          # report and ranking agree
-        assert f"${rot.income_usd_ha:,.0f} per hectare per year" in " ".join(rot.explanation["benefits"])
+        assert f"${rot.income_usd_ha:,.0f} per hectare)" in " ".join(rot.explanation["benefits"])
+        assert "per acre" in " ".join(rot.explanation["benefits"])
 
     value = lambda r, sci: r.economy.value(r.crops[sci])               # 0-1 used in the ranking
     own = backend.recommend(*ARGS, farm_numbers={"oats": {"price": 9000}})
@@ -215,7 +219,7 @@ def test_budget_keeps_only_rotations_the_farmer_can_afford(offline):
         assert rot.to_dict()["cost_usd_ha_per_year"] == round(known)
         assert "within your budget of $8,000" in " ".join(rot.explanation["benefits"])
     text = rec.to_text()
-    assert "Budget: $8,000 a year for 10 ha = at most $800 per hectare a year" in text
+    assert "Budget: $8,000 a year for 10 ha = at most $324 per acre ($800 per hectare) a year" in text
     assert rec.to_dict()["budget"]["max_cost_usd_ha"] == 800
 
 
@@ -279,3 +283,17 @@ def test_bad_inputs_give_clear_errors(offline, kwargs, message):
     args = dict(lat=42.065, lon=-93.73, start_date="2015-01-01", end_date="2024-12-31") | kwargs
     with pytest.raises(ValueError, match=message):
         backend.recommend(**args)
+
+
+def test_forage_sentence_skips_cash_crops_tagged_as_forage(offline):
+    import dataclasses
+    from decision.report import explain
+    from decision.rotations import CARD
+    rec = backend.recommend(*ARGS)
+    rot = rec.rotations[0]
+    placed = tuple((m, dataclasses.replace(s, crop=dataclasses.replace(s.crop, roles=frozenset({"cash", "forage"}))))
+                   if s.use != "cover" else (m, s) for m, s in rot.placed)
+    tagged = dataclasses.replace(rot, placed=placed)
+    benefits = explain(tagged, rec.field, None, {k: 1.0 for k in CARD}, "balanced", economy=rec.economy)["benefits"]
+    grazing = " ".join(b for b in benefits if "grazed" in b)           # cover crops may still be named
+    assert not any(s.crop.name in grazing for s in tagged.harvests)

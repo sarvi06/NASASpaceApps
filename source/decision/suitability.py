@@ -1,7 +1,8 @@
 """How well does each crop suit this field if planted in a given month?  (0 = impossible, 1 = ideal)
 
 For every crop x planting month this checks, against the crop's EcoCrop needs:
-  temperature   each growing month's mean temp vs optimal/absolute range (NASA POWER)
+  temperature   each growing month's mean temp vs optimal/absolute range (NASA POWER);
+                the planting and last months only need to be a little above the minimum
   frost         coldest nights while growing vs the crop's killing temperature
   winter        overwintering crops (e.g. winter wheat, rye) go dormant in cold months;
                 coldest dormant nights vs how cold they survive
@@ -34,7 +35,8 @@ TOLERATED = 0.7        # soil label only in the crop's tolerated (absolute) rang
 OUTSIDE = 0.2          # soil label outside even the tolerated range
 WINTER_MARGIN_C = 10   # colder than a crop's hardiness by up to this much = risk, not certain death
 COVER_LENGTHS = range(3, 9)   # cover crops stay in for 3-8 months
-MIN_HARVEST_MONTHS = 3        # field crops need at least 3 months to a harvest
+EDGE_MARGIN_C = 3      # planting and ripening months only need to be this far above the crop's minimum
+MIN_HARVEST_MONTHS = 3       # field crops need at least 3 months to a harvest
 
 _DEPTH = ["very shallow (<20 cm)", "shallow (20-50 cm)", "medium (50-150 cm)", "deep (>>150 cm)"]
 _SALINITY = ["none", "low (<4 dS/m)", "medium (4-10 dS/m)", "high (>10 dS/m))"]
@@ -73,6 +75,9 @@ class Climate:
 # --------------------------------------------------------------------------------------
 # One scored option: crop x planting month x use
 # --------------------------------------------------------------------------------------
+RESIDUE_MONTHS = 2   # dead cover-crop residue keeps protecting the soil for about this long
+
+
 @dataclass(frozen=True)
 class Slot:
     crop: Crop
@@ -85,6 +90,12 @@ class Slot:
     evidence: tuple = ()        # sentences with the numbers behind each factor
     flags: tuple = ()           # risks worth a local check
     gaps: tuple = ()            # data that was missing for this crop / field
+    covering: int | None = None  # months the soil is really covered; None = all of `months`
+
+    @property
+    def covered(self) -> int:
+        """Months the soil is protected (a killed cover crop only leaves residue for a while)."""
+        return self.months if self.covering is None else self.covering
 
     @property
     def end(self) -> int:
@@ -248,11 +259,20 @@ def score_harvest(crop: Crop, start: int, clim: Climate, site: dict | None = Non
     return best
 
 
+def _month_temp_score(crop: Crop, t: float, edge: bool) -> float:
+    """One growing month's temperature score. The planting month and the last (ripening)
+    month only need to be EDGE_MARGIN_C above the crop's minimum, not in its optimum range:
+    the crop is emerging or drying down, not making its yield. Too hot still counts."""
+    opt_lo = min(crop.topmn, crop.tmin + EDGE_MARGIN_C) if edge else crop.topmn
+    return trapezoid(t, crop.tmin, opt_lo, crop.topmx, crop.tmax)
+
+
 def _score_window(crop, start, months, active, dormant, clim, site, irrigated) -> Slot:
     factors, evidence, flags, gaps = {}, [], [], []
 
     temps = [clim.tmean[m] for m in active]
-    month_scores = [trapezoid(t, crop.tmin, crop.topmn, crop.topmx, crop.tmax) for t in temps]
+    month_scores = [_month_temp_score(crop, t, i in (0, len(temps) - 1))
+                    for i, t in enumerate(temps)]
     # average month, pulled down by the worst month (one very marginal month matters)
     worst, mean = min(month_scores), sum(month_scores) / len(month_scores)
     factors["temperature"] = 0.0 if worst == 0 else 0.5 * mean + 0.5 * worst
@@ -305,7 +325,13 @@ def _score_window(crop, start, months, active, dormant, clim, site, irrigated) -
 # --------------------------------------------------------------------------------------
 def score_cover(crop: Crop, start: int, months: int, clim: Climate,
                 site: dict | None = None) -> Slot | None:
-    """Cover crop planted in `start` and ended after `months` months (None if it can't establish)."""
+    """Cover crop planted in `start` and ended after `months` months (None if it can't establish).
+    Also None beyond the furthest latitude EcoCrop says the crop is grown at: a cover crop
+    nobody grows that far from the equator has no local seed or know-how. (Harvest crops are
+    not cut this way; EcoCrop's limits for them are too tight, e.g. 48 N for corn.)"""
+    lat = (site or {}).get("lat")
+    if lat is not None and crop.lat_limit is not None and abs(lat) > crop.lat_limit:
+        return None
     window = [(start + i) % 12 for i in range(months)]
     first = window[0]
     if trapezoid(clim.tmean[first], crop.tmin, crop.topmn, crop.topmx, crop.tmax) == 0:
@@ -334,7 +360,8 @@ def score_cover(crop: Crop, start: int, months: int, clim: Climate,
                     + "/".join(f"{clim.tmean[m]:.0f}" for m in establish)
                     + f" degC (NASA POWER) vs optimum {crop.topmn:g}-{crop.topmx:g} degC (EcoCrop)")
     if killed_in is not None:
-        evidence.append(f"Killed by cold in {MONTHS[killed_in]}; its residue keeps covering the soil")
+        evidence.append(f"Killed by cold in {MONTHS[killed_in]}; its residue covers the soil "
+                        f"for about {RESIDUE_MONTHS} more months")
     if dormant:
         factors["winter"], ev, fl = winter_factor(crop, dormant, clim)
         evidence += ev
@@ -346,8 +373,12 @@ def score_cover(crop: Crop, start: int, months: int, clim: Climate,
     limiter = min(factors, key=factors.get)
     if limiter == "soil":
         limiter = f"soil ({soil_part})"
+    # Alive months plus the residue months; a crop that was never killed covers the whole slot.
+    covering = None
+    if killed_in is not None:
+        covering = min(months, len(growth) + len(dormant) + RESIDUE_MONTHS)
     return Slot(crop, start, months, "cover", round(min(factors.values()), 3),
-                limiter, factors, tuple(evidence), tuple(flags), tuple(gaps))
+                limiter, factors, tuple(evidence), tuple(flags), tuple(gaps), covering)
 
 
 # --------------------------------------------------------------------------------------

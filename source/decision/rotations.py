@@ -124,6 +124,7 @@ class Rotation:
     strategy: str = ""             # why it was picked, e.g. "best for your priority"
     start_note: str = ""           # why it starts with this crop, given the field's last crop
     explanation: dict = field(default_factory=dict)
+    resilience: dict = field(default_factory=dict)   # how it holds up in other weather (resilience.py)
 
     @property
     def horizon(self) -> int:
@@ -149,7 +150,7 @@ class Rotation:
     def covered_months(self) -> set[int]:
         out = set()
         for a, s in self.placed:
-            out.update((a + i) % self.horizon for i in range(s.months))
+            out.update((a + i) % self.horizon for i in range(s.covered))
         return out
 
     def bare_months(self) -> list[int]:
@@ -188,6 +189,7 @@ class Rotation:
             } for a, s in self.placed],
             "bare_months": len(self.bare_months()),
             "explanation": self.explanation,
+            "resilience": self.resilience,
         }
 
 
@@ -206,6 +208,17 @@ def yearly_cost(rot: Rotation, economy: Economy) -> float:
     return sum(economy.cost(s.crop) for s in rot.harvests) / rot.years
 
 
+def fit_score(slots: list[Slot], scores: list[float] | None = None) -> float:
+    """Climate & soil fit, 0-1: the slots' scores averaged by months in the ground, cover
+    crops at half weight (they only need to establish, not make a yield). `scores` replaces
+    the slots' own scores, e.g. the same crops re-scored in other weather (resilience.py)."""
+    if not slots:
+        return 0.0
+    scores = [s.score for s in slots] if scores is None else scores
+    weights = [s.months * (1.0 if s.use == "harvest" else 0.5) for s in slots]
+    return sum(v * w for v, w in zip(scores, weights)) / sum(weights)
+
+
 def score_card(rot: Rotation, clim: Climate, economy: Economy | None = None,
                insights: dict | None = None, previous: Crop | None = None) -> dict:
     """0-1 scores on each CARD item. With `previous` (the crop the field grew last), crop
@@ -213,8 +226,7 @@ def score_card(rot: Rotation, clim: Climate, economy: Economy | None = None,
     economy = economy or Economy()
     insights = insights or {}
     slots, harvests = rot.slots, rot.harvests
-    weights = [s.months * (1.0 if s.use == "harvest" else 0.5) for s in slots]
-    fit = sum(s.score * w for s, w in zip(slots, weights)) / sum(weights) if slots else 0.0
+    fit = fit_score(slots)
     cover = len(rot.covered_months()) / rot.horizon
     nitrogen = min(1.0, sum(_legume_n(s) for s in slots) / (rot.years * 0.5))
     diversity = min(1.0, (len({s.crop.family for s in slots}) - 1) / 3)
@@ -273,7 +285,7 @@ def _gain(placed: tuple, slot: Slot, horizon: int, years: int, weights: dict, ra
         return None
 
     g = weights["fit"] * slot.score * slot.months / horizon
-    g += weights["cover"] * slot.months / horizon
+    g += weights["cover"] * slot.covered / horizon
     g += weights["nitrogen"] * _legume_n(slot) / (years * 0.5) * 0.7
     if slot.use == "harvest":
         g += weights["income"] * economy.value(c) * slot.score / years
